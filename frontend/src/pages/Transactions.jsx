@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { transactionsAPI, categoriesAPI } from '../services/api';
 import { format } from 'date-fns';
-import { ArrowUpTrayIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { ArrowUpTrayIcon, PencilIcon, TrashIcon, ChevronUpIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 
 export default function Transactions() {
   const [transactions, setTransactions] = useState([]);
@@ -10,6 +10,10 @@ export default function Transactions() {
   const [filters, setFilters] = useState({
     merchant: '',
     category_id: '',
+  });
+  const [sortConfig, setSortConfig] = useState({
+    sortBy: 'date',
+    sortOrder: 'desc',
   });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
@@ -21,9 +25,13 @@ export default function Transactions() {
     fetchCategories();
   }, []);
 
+  useEffect(() => {
+    fetchTransactions();
+  }, [sortConfig]);
+
   const fetchTransactions = async () => {
     try {
-      const response = await transactionsAPI.getAll(filters);
+      const response = await transactionsAPI.getAll({ ...filters, ...sortConfig });
       setTransactions(response.data);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
@@ -96,6 +104,24 @@ export default function Transactions() {
     } catch (error) {
       console.error('Failed to delete transaction:', error);
     }
+  };
+
+  const handleSort = (column) => {
+    setSortConfig((prev) => ({
+      sortBy: column,
+      sortOrder: prev.sortBy === column && prev.sortOrder === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const SortIcon = ({ column }) => {
+    if (sortConfig.sortBy !== column) {
+      return <ChevronUpIcon className="w-4 h-4 text-gray-400" />;
+    }
+    return sortConfig.sortOrder === 'asc' ? (
+      <ChevronUpIcon className="w-4 h-4 text-blue-600" />
+    ) : (
+      <ChevronDownIcon className="w-4 h-4 text-blue-600" />
+    );
   };
 
   const handleExport = async () => {
@@ -176,20 +202,50 @@ export default function Transactions() {
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Date
+                <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                  onClick={() => handleSort('date')}
+                >
+                  <div className="flex items-center gap-1">
+                    Date
+                    <SortIcon column="date" />
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Merchant
+                <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                  onClick={() => handleSort('merchant')}
+                >
+                  <div className="flex items-center gap-1">
+                    Merchant
+                    <SortIcon column="merchant" />
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Category
+                <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                  onClick={() => handleSort('category')}
+                >
+                  <div className="flex items-center gap-1">
+                    Category
+                    <SortIcon column="category" />
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Amount
+                <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                  onClick={() => handleSort('amount')}
+                >
+                  <div className="flex items-center gap-1">
+                    Amount
+                    <SortIcon column="amount" />
+                  </div>
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Type
+                <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
+                  onClick={() => handleSort('type')}
+                >
+                  <div className="flex items-center gap-1">
+                    Type
+                    <SortIcon column="type" />
+                  </div>
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions

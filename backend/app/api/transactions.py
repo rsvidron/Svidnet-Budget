@@ -22,6 +22,8 @@ def get_transactions(
     end_date: Optional[datetime] = None,
     category_id: Optional[str] = None,
     merchant: Optional[str] = None,
+    sort_by: Optional[str] = "date",
+    sort_order: Optional[str] = "desc",
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -40,7 +42,23 @@ def get_transactions(
     if merchant and merchant.strip():
         query = query.filter(Transaction.merchant.ilike(f"%{merchant}%"))
 
-    transactions = query.order_by(Transaction.date.desc()).offset(skip).limit(limit).all()
+    # Apply sorting
+    sort_column_map = {
+        "date": Transaction.date,
+        "merchant": Transaction.merchant,
+        "category": Transaction.category_id,
+        "amount": Transaction.amount,
+        "type": Transaction.transaction_type,
+        "description": Transaction.description,
+    }
+
+    sort_column = sort_column_map.get(sort_by, Transaction.date)
+    if sort_order == "asc":
+        query = query.order_by(sort_column.asc())
+    else:
+        query = query.order_by(sort_column.desc())
+
+    transactions = query.offset(skip).limit(limit).all()
     return transactions
 
 
