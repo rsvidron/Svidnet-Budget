@@ -165,12 +165,19 @@ async def environment_check() -> Dict[str, Any]:
     """
     Check environment variables (non-sensitive values only)
     """
+    secret_key_env = os.getenv("SECRET_KEY", "")
+    secret_key_settings = settings.SECRET_KEY
+
     env_vars = {
         "PORT": os.getenv("PORT", "not set"),
         "ENVIRONMENT": os.getenv("ENVIRONMENT", "not set"),
         "DATABASE_URL": "set" if os.getenv("DATABASE_URL") else "not set",
         "SECRET_KEY": "set" if os.getenv("SECRET_KEY") else "not set",
-        "SECRET_KEY_LENGTH": len(os.getenv("SECRET_KEY", "")) if os.getenv("SECRET_KEY") else 0,
+        "SECRET_KEY_LENGTH_ENV": len(secret_key_env),
+        "SECRET_KEY_LENGTH_SETTINGS": len(secret_key_settings),
+        "SECRET_KEY_PREFIX_ENV": secret_key_env[:10] + "..." if secret_key_env else "not set",
+        "SECRET_KEY_PREFIX_SETTINGS": secret_key_settings[:10] + "..." if secret_key_settings else "not set",
+        "KEYS_MATCH": secret_key_env == secret_key_settings if secret_key_env and secret_key_settings else False,
         "FRONTEND_URL": os.getenv("FRONTEND_URL", "not set"),
         "RAILWAY_PUBLIC_DOMAIN": os.getenv("RAILWAY_PUBLIC_DOMAIN", "not set"),
     }
@@ -186,18 +193,33 @@ async def test_token_decode(token: str) -> Dict[str, Any]:
     """
     Test JWT token decoding for debugging
     """
-    from app.core.security import decode_access_token
+    from app.core.security import decode_access_token, create_access_token
+    from jose import jwt
+
     try:
+        # Try to decode
         payload = decode_access_token(token)
+
+        # Also create a test token to compare
+        test_token = create_access_token({"sub": 999, "test": True})
+        test_payload = decode_access_token(test_token)
+
         return {
             "status": "success",
-            "payload": payload,
+            "input_token_payload": payload,
+            "test_token": test_token,
+            "test_token_payload": test_payload,
+            "secret_key_prefix": settings.SECRET_KEY[:10] + "..." if settings.SECRET_KEY else None,
+            "secret_key_length": len(settings.SECRET_KEY) if settings.SECRET_KEY else 0,
             "timestamp": datetime.utcnow().isoformat()
         }
     except Exception as e:
         logger.error(f"Token decode error: {e}")
+        import traceback
         return {
             "status": "error",
             "error": str(e),
+            "traceback": traceback.format_exc(),
+            "secret_key_prefix": settings.SECRET_KEY[:10] + "..." if settings.SECRET_KEY else None,
             "timestamp": datetime.utcnow().isoformat()
         }
