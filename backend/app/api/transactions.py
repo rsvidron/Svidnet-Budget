@@ -182,6 +182,17 @@ def update_transaction(
     return transaction
 
 
+@router.delete("/clear")
+def clear_my_transactions(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Delete all transactions for the current user. Categories are kept."""
+    deleted_trans = db.query(Transaction).filter(Transaction.user_id == current_user.id).delete()
+    db.commit()
+    return {"message": f"Deleted {deleted_trans} transaction(s).", "deleted_transactions": deleted_trans}
+
+
 @router.delete("/{transaction_id}")
 def delete_transaction(
     transaction_id: int,
@@ -202,17 +213,6 @@ def delete_transaction(
     db.delete(transaction)
     db.commit()
     return {"message": "Transaction deleted successfully"}
-
-
-@router.delete("/clear")
-def clear_my_transactions(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """Delete all transactions for the current user. Categories are kept."""
-    deleted_trans = db.query(Transaction).filter(Transaction.user_id == current_user.id).delete()
-    db.commit()
-    return {"message": f"Deleted {deleted_trans} transaction(s).", "deleted_transactions": deleted_trans}
 
 
 @router.post("/upload")

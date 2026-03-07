@@ -151,7 +151,9 @@ export default function Transactions() {
       setUploadMessage({ type: 'success', text: data.message });
       fetchTransactions();
     } catch (error) {
-      setUploadMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to clear.' });
+      const detail = error.response?.data?.detail;
+      const text = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail[0]?.msg || 'Failed to clear.' : 'Failed to clear.';
+      setUploadMessage({ type: 'error', text: typeof text === 'string' ? text : 'Failed to clear.' });
     }
   };
 
