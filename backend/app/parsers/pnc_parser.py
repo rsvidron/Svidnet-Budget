@@ -19,6 +19,17 @@ def _extract_text_pdfplumber(file_path: str) -> str:
     return "\n".join(text_parts)
 
 
+def _extract_tables_pdfplumber(file_path: str) -> List[List[List[str]]]:
+    """Extract tables from each page. Returns list of tables, each table is list of rows (list of cells)."""
+    all_tables = []
+    with pdfplumber.open(file_path) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            if tables:
+                all_tables.extend(tables)
+    return all_tables
+
+
 def _extract_text_pypdf2(file_path: str) -> str:
     """Extract text using PyPDF2 as fallback."""
     with open(file_path, "rb") as f:
@@ -58,99 +69,250 @@ class PNCParser(BankStatementParser):
 
         return transactions
 
-    def parse_pdf(self, file_path: str) -> List[Dict]:
-        # Try pdfplumber first (better for many bank PDFs), then PyPDF2
+    def _parse_pdf_from_tables(self, file_path: str) -> List[Dict]:
+        """Parse transactions from PDF tables (one row per transaction)."""
+        tables = _extract_tables_pdfplumber(file_path)
+        if not tables:
+            return []
+
+        transactions = []
+        date_pattern = re.compile(r"(\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})")
+        amount_pattern = re.compile(r"[\$]?\s*-?\(?([\d,]+\.\d{2})\)?")
+        header_like = {"date", "description", "amount", "debit", "credit", "balance", "posting", "transaction", "details"}
+
+        for table in tables:
+            if not table:
+                continue
+            rows = [[str(c or "").strip() for c in row] for row in table if row]
+            if not rows:
+                continue
+
+            # Detect header row and column roles
+            date_col = desc_col = amount_col = None
+            start_row = 0
+            for idx, row in enumerate(rows):
+                for col, cell in enumerate(row):
+                    if not cell:
+                        continue
+                    lower = cell.lower()
+                    if "date" in lower or "posting" in lower:
+                        date_col = col
+                    if "description" in lower or "detail" in lower or "merchant" in lower or "payee" in lower:
+                        desc_col = col
+                    if "amount" in lower or "debit" in lower or "credit" in lower:
+                        amount_col = col
+                if date_col is not None or amount_col is not None:
+                    start_row = idx + 1
+                    break
+
+            # If we found header, use column indices
+            if date_col is not None or amount_col is not None:
+                for row in rows[start_row:]:
+                    if not row:
+                        continue
+                    date_str = None
+                    amount_val = None
+                    description = ""
+                    for col, cell in enumerate(row):
+                        if col >= len(row):
+                            break
+                        cell = row[col] if col < len(row) else ""
+                        if not cell:
+                            continue
+                        if date_col is not None and col == date_col:
+                            dm = date_pattern.search(cell)
+                            if dm:
+                                date_str = dm.group(1)
+                        elif amount_col is not None and col == amount_col:
+                            am = amount_pattern.search(cell)
+                            if am:
+                                try:
+                                    amount_val = float(am.group(1).replace(",", ""))
+                                except ValueError:
+                                    pass
+                        elif desc_col is not None and col == desc_col:
+                            description = cell
+                        elif date_col is None and date_pattern.search(cell):
+                            date_str = date_pattern.search(cell).group(1)
+                        elif amount_col is None and amount_pattern.search(cell):
+                            try:
+                                amount_val = float(amount_pattern.search(cell).group(1).replace(",", ""))
+                            except (ValueError, AttributeError):
+                                pass
+                        elif not description and cell.lower() not in header_like:
+                            description = cell if not description else description + " " + cell
+                    if date_str and amount_val is not None and (description or any(row)):
+                        if not description:
+                            description = " ".join(c for c in row if c and c != date_str)
+                        t_type = "credit" if amount_val < 0 or "(" in " ".join(row) else "debit"
+                        transactions.append(
+                            self.normalize_transaction({
+                                "date": self._parse_date(date_str),
+                                "merchant": self._extract_merchant(description),
+                                "description": description,
+                                "amount": abs(amount_val),
+                                "transaction_type": t_type,
+                            })
+                        )
+                continue
+
+            # No header: infer from each row (date in one cell, amount in another, rest = description)
+            for row in rows:
+                if not row or not any(row):
+                    continue
+                date_str = None
+                amount_val = None
+                desc_parts = []
+                for cell in row:
+                    if not cell:
+                        continue
+                    dm = date_pattern.search(cell)
+                    am = amount_pattern.search(cell)
+                    if dm and not date_str:
+                        date_str = dm.group(1)
+                    elif am and amount_val is None:
+                        try:
+                            amount_val = float(am.group(1).replace(",", ""))
+                        except ValueError:
+                            pass
+                    if not dm and not am and cell.lower() not in header_like:
+                        desc_parts.append(cell)
+                if date_str and amount_val is not None:
+                    description = " ".join(desc_parts) if desc_parts else " ".join(c for c in row if c and c != date_str)
+                    if description.lower() in header_like:
+                        continue
+                    t_type = "credit" if amount_val < 0 or any("(" in c for c in row) else "debit"
+                    transactions.append(
+                        self.normalize_transaction({
+                            "date": self._parse_date(date_str),
+                            "merchant": self._extract_merchant(description),
+                            "description": description or "Transaction",
+                            "amount": abs(amount_val),
+                            "transaction_type": t_type,
+                        })
+                    )
+
+        return transactions
+
+    def _parse_pdf_from_text(self, file_path: str) -> List[Dict]:
+        """Parse transactions from extracted text (line-by-line and date-chunk)."""
         full_text = _extract_text_pdfplumber(file_path)
         if not full_text or not full_text.strip():
             full_text = _extract_text_pypdf2(file_path)
         if not full_text or not full_text.strip():
             return []
 
-        # Normalize: collapse multiple spaces and keep newlines for line-based parsing
-        full_text = re.sub(r"[ \t]+", " ", full_text)
-        lines = [ln.strip() for ln in full_text.splitlines() if ln.strip()]
-
         transactions = []
-        seen = set()  # (date_str, desc_snippet, amount) to avoid duplicates
+        seen = set()
 
-        def add_transaction(date_str: str, description: str, amount: float, transaction_type: str) -> None:
-            key = (date_str, description[:40], amount)
+        def add(date_str: str, description: str, amount: float, transaction_type: str) -> None:
+            key = (date_str, (description or "")[:50], round(amount, 2))
             if key in seen:
                 return
             seen.add(key)
-            merchant = self._extract_merchant(description)
-            dt = self._parse_date(date_str)
+            desc = (description or "").strip() or "Transaction"
             transactions.append(
                 self.normalize_transaction({
-                    "date": dt,
-                    "merchant": merchant,
-                    "description": description,
+                    "date": self._parse_date(date_str),
+                    "merchant": self._extract_merchant(desc),
+                    "description": desc,
                     "amount": abs(amount),
                     "transaction_type": transaction_type,
                 })
             )
 
-        # Pattern 1: PNC-style — MM/DD/YYYY  Description  $1,234.56 or (1,234.56)
-        for m in re.finditer(
-            r"(\d{1,2}/\d{1,2}/\d{4})\s+([^\$\(]+?)\s+\$?([\d,]+\.\d{2})\s*$",
-            full_text,
-            re.MULTILINE,
-        ):
-            date_str, desc, amount_str = m.group(1), m.group(2).strip(), m.group(3).replace(",", "")
-            add_transaction(date_str, desc, float(amount_str), "debit")
+        # Normalize spaces but keep newlines
+        full_text = re.sub(r"[ \t]+", " ", full_text)
+        lines = [ln.strip() for ln in full_text.splitlines() if ln.strip()]
 
-        # Pattern 2: Amount in parentheses = credit (negative amount)
-        for m in re.finditer(
-            r"(\d{1,2}/\d{1,2}/\d{4})\s+([^\$]+?)\s+\(([\d,]+\.\d{2})\)",
-            full_text,
-        ):
-            date_str, desc, amount_str = m.group(1), m.group(2).strip(), m.group(3).replace(",", "")
-            add_transaction(date_str, desc, float(amount_str), "credit")
-
-        # Pattern 3: $ amount at end, optional minus for debit
-        for m in re.finditer(
-            r"(\d{1,2}/\d{1,2}/\d{4})\s+(.+?)\s+\$?\s*-?([\d,]+\.\d{2})\s*",
-            full_text,
-        ):
-            date_str, desc, amount_str = m.group(1), m.group(2).strip(), m.group(3).replace(",", "")
-            raw = m.group(0)
-            is_credit = "(" in raw or raw.strip().endswith("-")
-            t_type = "credit" if is_credit else "debit"
-            add_transaction(date_str, desc, float(amount_str), t_type)
-
-        # Pattern 4: YYYY-MM-DD style (e.g. 2024-01-15)
-        for m in re.finditer(
-            r"(\d{4}-\d{2}-\d{2})\s+([^\$\(]+?)\s+\$?([\d,]+\.\d{2})\s*",
-            full_text,
-        ):
-            date_str, desc, amount_str = m.group(1), m.group(2).strip(), m.group(3).replace(",", "")
-            add_transaction(date_str, desc, float(amount_str), "debit")
-
-        # Pattern 5: Line-by-line — date at start, amount at end (last number with 2 decimals)
-        date_re = re.compile(r"^(\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})\s+(.+)$")
-        amount_re = re.compile(r"[\$]?\s*-?([\d,]+\.\d{2})\s*$")
-        skip_words = {"date", "description", "amount", "balance", "debit", "credit"}
-        for line in lines:
-            dm = date_re.match(line)
-            if not dm:
+        # --- Strategy 1: Split entire text by date pattern, then each chunk = one transaction ---
+        # This catches "01/01/2024 DESC1 10.00 01/02/2024 DESC2 20.00" with no newlines
+        date_re = re.compile(r"(\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})")
+        amount_re = re.compile(r"[\$]?\s*-?\(?([\d,]+\.\d{2})\)?\s*")
+        chunks = date_re.split(full_text)
+        # chunks[0] may be preamble, then [date1, text1, date2, text2, ...]
+        for i in range(1, len(chunks) - 1, 2):
+            if i + 1 >= len(chunks):
+                break
+            date_str = chunks[i].strip()
+            block = chunks[i + 1].strip()
+            if not date_str or not block:
                 continue
-            date_str, rest = dm.group(1), dm.group(2).strip()
-            am = amount_re.search(rest)
+            # Last number with 2 decimals in block is usually the amount
+            amounts = amount_re.findall(block)
+            if not amounts:
+                continue
+            amount_str = amounts[-1].replace(",", "")
+            try:
+                amount = float(amount_str)
+            except ValueError:
+                continue
+            # Description = text before the last amount
+            desc_block = amount_re.sub("", block)
+            # Remove trailing amount text
+            for _ in range(len(amounts) - 1):
+                desc_block = amount_re.sub("", desc_block, count=1)
+            description = " ".join(desc_block.split()).strip()
+            if len(description) < 2:
+                description = block[:80]
+            is_credit = "(" in block or "-" in block
+            add(date_str, description, amount, "credit" if is_credit else "debit")
+
+        # --- Strategy 2: Every line that starts with date and contains an amount ---
+        line_date_re = re.compile(r"^(\d{1,2}/\d{1,2}/\d{4}|\d{4}-\d{2}-\d{2})\s+(.+)$")
+        line_amount_re = re.compile(r"[\$]?\s*-?\(?([\d,]+\.\d{2})\)?\s*$")
+        skip_words = {"date", "description", "amount", "balance", "debit", "credit", "posting", "transaction"}
+        for line in lines:
+            m = line_date_re.match(line)
+            if not m:
+                continue
+            date_str, rest = m.group(1), m.group(2).strip()
+            am = line_amount_re.search(rest)
             if not am:
                 continue
             amount_str = am.group(1).replace(",", "")
-            description = amount_re.sub("", rest).strip()
-            if not description or len(description) < 2:
+            try:
+                amount = float(amount_str)
+            except ValueError:
                 continue
-            if description.lower() in skip_words:
+            description = line_amount_re.sub("", rest).strip()
+            if not description or description.lower() in skip_words:
                 continue
-            is_credit = "(" in rest or rest.strip().endswith("-")
-            t_type = "credit" if is_credit else "debit"
-            add_transaction(date_str, description, float(amount_str), t_type)
+            is_credit = "(" in rest or rest.rstrip().endswith("-")
+            add(date_str, description, amount, "credit" if is_credit else "debit")
 
-        # Sort by date ascending (oldest first)
-        transactions.sort(key=lambda t: t["date"])
+        # --- Strategy 3: Global regex for date + ... + amount (multiline) ---
+        for regex in (
+            r"(\d{1,2}/\d{1,2}/\d{4})\s+([^\$\(\n]+?)\s+\$?([\d,]+\.\d{2})\s*",
+            r"(\d{4}-\d{2}-\d{2})\s+([^\$\(\n]+?)\s+\$?([\d,]+\.\d{2})\s*",
+            r"(\d{1,2}/\d{1,2}/\d{4})\s+(.+?)\s+\(([\d,]+\.\d{2})\)",
+        ):
+            for m in re.finditer(regex, full_text):
+                date_str = m.group(1)
+                amount_str = m.group(3).replace(",", "")
+                try:
+                    amount = float(amount_str)
+                except ValueError:
+                    continue
+                desc = m.group(2).strip()
+                if not desc or desc.lower() in skip_words:
+                    continue
+                t_type = "credit" if "(" in m.group(0) else "debit"
+                add(date_str, desc, amount, t_type)
+
         return transactions
+
+    def parse_pdf(self, file_path: str) -> List[Dict]:
+        # 1) Try tables first (many bank statements are tabular)
+        from_tables = self._parse_pdf_from_tables(file_path)
+        if from_tables:
+            from_tables.sort(key=lambda t: t["date"])
+            return from_tables
+
+        # 2) Parse from raw text (line + date-chunk strategies)
+        from_text = self._parse_pdf_from_text(file_path)
+        from_text.sort(key=lambda t: t["date"])
+        return from_text
 
     def _parse_date(self, date_str: str) -> datetime:
         for fmt in ['%m/%d/%Y', '%Y-%m-%d', '%m-%d-%Y', '%d/%m/%Y']:
