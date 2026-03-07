@@ -124,6 +124,13 @@ class PNCParser(BankStatementParser):
             if not rows:
                 continue
 
+            # Skip Daily Balance Detail and other balance-summary tables (Date + Balance only, no Description)
+            first_row_text = " ".join(c for c in rows[0] if c).lower()
+            if "daily balance" in first_row_text:
+                continue
+            if "balance" in first_row_text and "description" not in first_row_text and "amount" not in first_row_text and "debit" not in first_row_text and "credit" not in first_row_text:
+                continue
+
             # Detect header row and column roles
             date_col = desc_col = amount_col = None
             start_row = 0
@@ -216,6 +223,10 @@ class PNCParser(BankStatementParser):
                         desc_parts.append(cell)
                 if date_str and amount_val is not None:
                     description = " ".join(desc_parts) if desc_parts else " ".join(c for c in row if c and c != date_str)
+                    # Skip balance-only rows (date + amount, no description) - e.g. Daily Balance Detail
+                    non_empty_cells = [c for c in row if c]
+                    if not description.strip() and len(non_empty_cells) <= 2:
+                        continue
                     if description.lower() in header_like:
                         continue
                     t_type = "credit" if amount_val < 0 or any("(" in c for c in row) else "debit"
@@ -375,6 +386,10 @@ class PNCParser(BankStatementParser):
                     continue
                 m = SECTION_ROW_PATTERN.match(line)
                 if m:
+                    desc = m.group(3).strip()
+                    # Skip balance-only lines (Date + Amount, no description) - e.g. Daily Balance Detail
+                    if not desc:
+                        continue
                     if current:
                         # Save previous
                         dt = self._parse_date(f"{current['date_str']}/{year}")
@@ -390,7 +405,7 @@ class PNCParser(BankStatementParser):
                     current = {
                         "date_str": m.group(1),
                         "amount": float(m.group(2).replace(",", "")),
-                        "description": m.group(3).strip(),
+                        "description": desc,
                         "transaction_type": transaction_type,
                     }
                 else:
