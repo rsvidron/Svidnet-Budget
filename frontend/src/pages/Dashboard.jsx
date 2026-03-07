@@ -152,7 +152,7 @@ export default function Dashboard() {
             <span className="text-sm font-medium text-gray-700">Category</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {categories.slice(0, 12).map((cat) => (
+            {[...categories].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((cat) => (
               <button
                 key={cat.id}
                 type="button"
