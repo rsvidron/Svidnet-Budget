@@ -13,6 +13,8 @@ export default function Transactions() {
   });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
+  const [uploading, setUploading] = useState(false);
+  const [uploadMessage, setUploadMessage] = useState(null);
 
   useEffect(() => {
     fetchTransactions();
@@ -42,14 +44,27 @@ export default function Transactions() {
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    e.target.value = '';
 
+    setUploadMessage(null);
+    setUploading(true);
     try {
-      await transactionsAPI.upload(file);
+      const { data } = await transactionsAPI.upload(file);
+      setUploadMessage({
+        type: 'success',
+        text: data.message || `Imported ${data.count ?? 0} transactions.`,
+      });
       fetchTransactions();
-      alert('Transactions imported successfully!');
     } catch (error) {
-      console.error('Failed to upload file:', error);
-      alert('Failed to upload file. Please try again.');
+      const detail = error.response?.data?.detail;
+      const message = typeof detail === 'string'
+        ? detail
+        : Array.isArray(detail) && detail[0]?.msg
+          ? detail[0].msg
+          : 'Failed to upload file. Please try again.';
+      setUploadMessage({ type: 'error', text: message });
+    } finally {
+      setUploading(false);
     }
   };
 
@@ -109,13 +124,26 @@ export default function Transactions() {
           <button onClick={handleExport} className="btn btn-secondary">
             Export CSV
           </button>
-          <label className="btn btn-primary cursor-pointer">
+          <label className={`btn btn-primary cursor-pointer ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
             <ArrowUpTrayIcon className="h-5 w-5 mr-2" />
-            Upload Statement
-            <input type="file" className="hidden" accept=".csv,.pdf" onChange={handleFileUpload} />
+            {uploading ? 'Uploading...' : 'Upload Statement'}
+            <input type="file" className="hidden" accept=".csv,.pdf" onChange={handleFileUpload} disabled={uploading} />
           </label>
         </div>
       </div>
+
+      {uploadMessage && (
+        <div
+          className={`p-4 rounded-lg ${
+            uploadMessage.type === 'success'
+              ? 'bg-green-50 text-green-800 border border-green-200'
+              : 'bg-red-50 text-red-800 border border-red-200'
+          }`}
+          role="alert"
+        >
+          {uploadMessage.text}
+        </div>
+      )}
 
       <div className="card">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">

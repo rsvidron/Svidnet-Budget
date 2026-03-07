@@ -135,31 +135,46 @@ async def upload_bank_statement(
         )
 
     file_ext = os.path.splitext(file.filename)[1].lower()
-    if file_ext not in ['.csv', '.pdf']:
+    if file_ext not in [".csv", ".pdf"]:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Only CSV and PDF files are supported",
+        )
+
+    content = await file.read()
+    if len(content) > getattr(settings, "MAX_UPLOAD_SIZE", 10 * 1024 * 1024):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="File too large. Maximum size is 10 MB.",
         )
 
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     file_path = os.path.join(settings.UPLOAD_DIR, f"{current_user.id}_{file.filename}")
 
     with open(file_path, "wb") as buffer:
-        content = await file.read()
         buffer.write(content)
 
     parser = PNCParser()
 
     try:
-        if file_ext == '.csv':
+        if file_ext == ".csv":
             transactions_data = parser.parse_csv(file_path)
         else:
             transactions_data = parser.parse_pdf(file_path)
     except Exception as e:
-        os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error parsing file: {str(e)}",
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Could not parse file: {str(e)}",
+        )
+
+    if not transactions_data:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="No transactions found in this file. The PDF format may not be supported. Try CSV export from your bank, or ensure the PDF is a transaction list.",
         )
 
     categorization_service = CategorizationService(db)
