@@ -37,10 +37,20 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -
 
 
 def decode_access_token(token: str) -> Optional[dict]:
+    import logging
+    logger = logging.getLogger(__name__)
+
     try:
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        logger.info(f"Token decoded successfully: {payload}")
         return payload
-    except JWTError:
+    except JWTError as e:
+        logger.error(f"JWT decode error: {e}")
+        logger.error(f"Token: {token[:50]}...")
+        logger.error(f"SECRET_KEY prefix: {settings.SECRET_KEY[:10]}...")
+        return None
+    except Exception as e:
+        logger.error(f"Unexpected decode error: {e}")
         return None
 
 
