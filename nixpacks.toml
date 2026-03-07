@@ -4,7 +4,7 @@ nixPkgs = ["python311", "nodejs-18_x", "postgresql"]
 
 [phases.install]
 cmds = [
-    "cd backend && pip install -r requirements.txt",
+    "pip install -r backend/requirements.txt",
     "cd frontend && npm install --legacy-peer-deps"
 ]
 
@@ -16,4 +16,4 @@ cmds = [
 ]
 
 [start]
-cmd = "sh -c 'cd backend && uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
+cmd = "uvicorn backend.app.main:app --host 0.0.0.0 --port $PORT"
