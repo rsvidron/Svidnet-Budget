@@ -26,12 +26,18 @@ export default function Transactions() {
   }, []);
 
   useEffect(() => {
-    fetchTransactions();
+    if (loading === false) {
+      fetchTransactions();
+    }
   }, [sortConfig]);
 
   const fetchTransactions = async () => {
     try {
-      const response = await transactionsAPI.getAll({ ...filters, ...sortConfig });
+      const response = await transactionsAPI.getAll({
+        ...filters,
+        sort_by: sortConfig.sortBy,
+        sort_order: sortConfig.sortOrder,
+      });
       setTransactions(response.data);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
