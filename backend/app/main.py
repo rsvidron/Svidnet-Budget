@@ -6,8 +6,9 @@ from pathlib import Path
 import os
 import logging
 from app.core.config import settings
-from app.core.database import engine, Base
+from app.core.database import engine, Base, SessionLocal
 from app.api import auth, transactions, categories, budgets, savings_goals, analytics
+from app.utils.seed_db import seed_default_user
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -34,6 +35,13 @@ async def startup_event():
     logger.info(f"Environment: {settings.ENVIRONMENT}")
     logger.info(f"Database URL: {settings.DATABASE_URL[:20]}...")
     logger.info(f"Port: {settings.PORT}")
+
+    # Seed default user
+    db = SessionLocal()
+    try:
+        seed_default_user(db)
+    finally:
+        db.close()
 
 app.add_middleware(
     CORSMiddleware,
