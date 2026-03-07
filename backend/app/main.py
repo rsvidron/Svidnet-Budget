@@ -7,7 +7,7 @@ import os
 import logging
 from app.core.config import settings
 from app.core.database import engine, Base, SessionLocal
-from app.api import auth, transactions, categories, budgets, savings_goals, analytics
+from app.api import auth, transactions, categories, budgets, savings_goals, analytics, debug
 from app.utils.seed_db import seed_default_user
 
 # Configure logging
@@ -57,6 +57,7 @@ app.include_router(categories.router, prefix=f"{settings.API_V1_STR}/categories"
 app.include_router(budgets.router, prefix=f"{settings.API_V1_STR}/budgets", tags=["budgets"])
 app.include_router(savings_goals.router, prefix=f"{settings.API_V1_STR}/savings-goals", tags=["savings-goals"])
 app.include_router(analytics.router, prefix=f"{settings.API_V1_STR}/analytics", tags=["analytics"])
+app.include_router(debug.router, prefix=f"{settings.API_V1_STR}/debug", tags=["debug"])
 
 
 @app.get("/health")
