@@ -58,3 +58,6 @@ Thumbs.db
 
 # Railway
 .railway/
+
+# Local parser validation (not deployed)
+statement_parser/

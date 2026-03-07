@@ -39,6 +39,43 @@ def _extract_text_pypdf2(file_path: str) -> str:
         )
 
 
+def _infer_statement_year(text: str) -> int:
+    """Infer statement year from PDF text (e.g. 'January 2025', '01/2025', 'Statement Period')."""
+    import time
+    current_year = time.gmtime().tm_year
+    # Statement Period: 01/01/2025 - 01/31/2025
+    m = re.search(r"Statement\s+Period[:\s]+\d{1,2}/\d{1,2}/(\d{4})", text, re.I)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\d{1,2}/\d{1,2}/(\d{4})", text)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{4})", text, re.I)
+    if m:
+        return int(m.group(1))
+    m = re.search(r"\d{1,2}/(\d{4})\b", text)
+    if m:
+        return int(m.group(1))
+    return current_year
+
+
+# Section headers for bank statement format (Deposits, Debit Card, Online Deductions)
+SECTION_DEPOSITS = re.compile(
+    r"Deposits\s+and\s+Other\s+Additions(?:\s*-?\s*continued)?",
+    re.I,
+)
+SECTION_DEBIT_CARD = re.compile(
+    r"Banking\s*/\s*Debit\s+Card\s+Withdrawals\s+and\s+Purchases(?:\s*-?\s*continued)?",
+    re.I,
+)
+SECTION_ONLINE_DEDUCTIONS = re.compile(
+    r"Online\s+and\s+Electronic\s+Banking\s+Deductions(?:\s*-?\s*continued)?",
+    re.I,
+)
+# One line item: MM/DD  amount  description (amount may have comma: 2,115.64; optional $)
+SECTION_ROW_PATTERN = re.compile(r"^(\d{2}/\d{2})\s+\$?([\d,]+\.\d{2})\s+(.*)$", re.M)
+
+
 class PNCParser(BankStatementParser):
     def parse_csv(self, file_path: str) -> List[Dict]:
         transactions = []
@@ -302,14 +339,114 @@ class PNCParser(BankStatementParser):
 
         return transactions
 
+    def _parse_pdf_sectioned(self, file_path: str) -> List[Dict]:
+        """Parse PDF with 'Deposits and Other Additions', 'Banking/Debit Card Withdrawals', 'Online and Electronic Banking Deductions' sections."""
+        full_text = _extract_text_pdfplumber(file_path)
+        if not full_text or not full_text.strip():
+            full_text = _extract_text_pypdf2(file_path)
+        if not full_text:
+            return []
+
+        # Check if this looks like the sectioned bank format
+        if not (
+            SECTION_DEPOSITS.search(full_text)
+            or SECTION_DEBIT_CARD.search(full_text)
+            or SECTION_ONLINE_DEDUCTIONS.search(full_text)
+        ):
+            return []
+
+        year = _infer_statement_year(full_text)
+        transactions = []
+
+        def parse_section_block(block: str, transaction_type: str) -> None:
+            block = re.sub(r"[ \t]+", " ", block)
+            lines = [ln.strip() for ln in block.splitlines() if ln.strip()]
+            current = None  # { date_str, amount, description }
+            for line in lines:
+                # Skip section header / column header lines
+                if re.match(r"^(Date|Amount|Description)\s*$", line, re.I) or re.match(
+                    r"^Date\s+Amount\s+Description\s*$", line, re.I
+                ):
+                    continue
+                # Skip footer / summary lines
+                if re.match(r"^There\s+(were|are)\s+\d+", line, re.I):
+                    continue
+                if re.match(r"^\d+\s+(other|Banking|Debit|POS)\s+", line, re.I):
+                    continue
+                m = SECTION_ROW_PATTERN.match(line)
+                if m:
+                    if current:
+                        # Save previous
+                        dt = self._parse_date(f"{current['date_str']}/{year}")
+                        transactions.append(
+                            self.normalize_transaction({
+                                "date": dt,
+                                "merchant": self._extract_merchant(current["description"]),
+                                "description": current["description"],
+                                "amount": current["amount"],
+                                "transaction_type": current["transaction_type"],
+                            })
+                        )
+                    current = {
+                        "date_str": m.group(1),
+                        "amount": float(m.group(2).replace(",", "")),
+                        "description": m.group(3).strip(),
+                        "transaction_type": transaction_type,
+                    }
+                else:
+                    # Continuation of previous description (wrapped line)
+                    if current and line and not re.match(r"^\d{2}/\d{2}\s+[\d,]+\.\d{2}", line):
+                        current["description"] = (current["description"] + " " + line).strip()
+            if current:
+                dt = self._parse_date(f"{current['date_str']}/{year}")
+                transactions.append(
+                    self.normalize_transaction({
+                        "date": dt,
+                        "merchant": self._extract_merchant(current["description"]),
+                        "description": current["description"],
+                        "amount": current["amount"],
+                        "transaction_type": current["transaction_type"],
+                    })
+                )
+
+        # Split by section headers and parse each block
+        section_pattern = re.compile(
+            r"(Deposits\s+and\s+Other\s+Additions(?:\s*-?\s*continued)?"
+            r"|Banking\s*/\s*Debit\s+Card\s+Withdrawals\s+and\s+Purchases(?:\s*-?\s*continued)?"
+            r"|Online\s+and\s+Electronic\s+Banking\s+Deductions(?:\s*-?\s*continued)?)",
+            re.I,
+        )
+        parts = section_pattern.split(full_text)
+        # parts: [preamble, "Deposits...", content, "Banking...", content, ...]
+        i = 1
+        while i < len(parts) - 1:
+            section_name = parts[i].strip()
+            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
+            i += 2
+            # Trim content until next section (or end)
+            next_section = section_pattern.search(content)
+            if next_section:
+                content = content[: next_section.start()]
+            if SECTION_DEPOSITS.match(section_name):
+                parse_section_block(content, "credit")
+            elif SECTION_DEBIT_CARD.match(section_name) or SECTION_ONLINE_DEDUCTIONS.match(section_name):
+                parse_section_block(content, "debit")
+        transactions.sort(key=lambda t: t["date"])
+        return transactions
+
     def parse_pdf(self, file_path: str) -> List[Dict]:
-        # 1) Try tables first (many bank statements are tabular)
+        # 1) Try sectioned format first (Deposits / Debit Card / Online Deductions)
+        sectioned = self._parse_pdf_sectioned(file_path)
+        if sectioned:
+            return sectioned
+
+        # 2) Try tables (many bank statements are tabular)
         from_tables = self._parse_pdf_from_tables(file_path)
         if from_tables:
             from_tables.sort(key=lambda t: t["date"])
             return from_tables
 
-        # 2) Parse from raw text (line + date-chunk strategies)
+        # 3) Parse from raw text (line + date-chunk strategies)
         from_text = self._parse_pdf_from_text(file_path)
         from_text.sort(key=lambda t: t["date"])
         return from_text
