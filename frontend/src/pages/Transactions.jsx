@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { transactionsAPI, categoriesAPI } from '../services/api';
 import { format } from 'date-fns';
 import { ArrowUpTrayIcon, PencilIcon, TrashIcon, ChevronUpIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
 
 export default function Transactions() {
+  const [searchParams] = useSearchParams();
+  const categoryFromUrl = searchParams.get('category_id') || '';
   const [transactions, setTransactions] = useState([]);
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     merchant: '',
-    category_id: '',
+    category_id: categoryFromUrl,
   });
   const [sortConfig, setSortConfig] = useState({
     sortBy: 'date',
@@ -21,9 +24,16 @@ export default function Transactions() {
   const [uploadMessage, setUploadMessage] = useState(null);
 
   useEffect(() => {
-    fetchTransactions();
     fetchCategories();
   }, []);
+  useEffect(() => {
+    if (categoryFromUrl) {
+      setFilters((f) => ({ ...f, category_id: categoryFromUrl }));
+    }
+  }, [categoryFromUrl]);
+  useEffect(() => {
+    fetchTransactions();
+  }, [filters.category_id, filters.merchant, sortConfig]);
 
   useEffect(() => {
     if (loading === false) {

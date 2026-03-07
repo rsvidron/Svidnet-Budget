@@ -302,13 +302,12 @@ async def upload_bank_statement(
 
         if use_csv_categories and "category_name" in trans_data:
             category_name = trans_data.get("category_name")
-            category_id = _get_or_create_category(db, current_user.id, category_name)
+            if category_name and str(category_name).strip():
+                category_id = _get_or_create_category(db, current_user.id, str(category_name).strip())
+            else:
+                category_id = None
             if category_id is None:
-                category_id = categorization_service.categorize_transaction(
-                    current_user.id,
-                    trans_data["merchant"],
-                    trans_data.get("description", ""),
-                )
+                category_id = _get_or_create_category(db, current_user.id, "Uncategorized")
             payload = {k: v for k, v in trans_data.items() if k != "category_name"}
         else:
             category_id = categorization_service.categorize_transaction(
@@ -316,6 +315,8 @@ async def upload_bank_statement(
                 trans_data["merchant"],
                 trans_data.get("description", ""),
             )
+            if category_id is None:
+                category_id = _get_or_create_category(db, current_user.id, "Uncategorized")
             payload = trans_data
 
         transaction = Transaction(

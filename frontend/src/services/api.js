@@ -96,7 +96,7 @@ export const analyticsAPI = {
   getBudgetProgress: (params) => api.get('/analytics/budget-progress', { params }),
   getTopMerchants: (params) => api.get('/analytics/top-merchants', { params }),
   getRecurringTransactions: () => api.get('/analytics/recurring-transactions'),
-  getDashboard: () => api.get('/analytics/dashboard'),
+  getDashboard: (params) => api.get('/analytics/dashboard', { params }),
 };
 
 export default api;
