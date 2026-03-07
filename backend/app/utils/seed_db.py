@@ -29,10 +29,13 @@ def seed_default_user(db: Session) -> None:
         # Create default admin user
         logger.info(f"Creating default admin user: {DEFAULT_ADMIN_EMAIL}")
 
+        # Ensure password is within bcrypt's 72 byte limit
+        password = DEFAULT_ADMIN_PASSWORD.encode('utf-8')[:72].decode('utf-8')
+
         admin_user = User(
             email=DEFAULT_ADMIN_EMAIL,
             username=DEFAULT_ADMIN_USERNAME,
-            hashed_password=get_password_hash(DEFAULT_ADMIN_PASSWORD),
+            hashed_password=get_password_hash(password),
             is_active=True,
             is_verified=True
         )
