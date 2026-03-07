@@ -54,6 +54,7 @@ export const transactionsAPI = {
   create: (data) => api.post('/transactions/', data),
   update: (id, data) => api.put(`/transactions/${id}`, data),
   delete: (id) => api.delete(`/transactions/${id}`),
+  clear: () => api.delete('/transactions/clear'),
   upload: (file) => {
     const formData = new FormData();
     formData.append('file', file);

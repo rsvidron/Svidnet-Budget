@@ -144,6 +144,17 @@ export default function Transactions() {
     }
   };
 
+  const handleClearAll = async () => {
+    if (!confirm('Delete ALL your transactions? Categories will be kept.')) return;
+    try {
+      const { data } = await transactionsAPI.clear();
+      setUploadMessage({ type: 'success', text: data.message });
+      fetchTransactions();
+    } catch (error) {
+      setUploadMessage({ type: 'error', text: error.response?.data?.detail || 'Failed to clear.' });
+    }
+  };
+
   if (loading) {
     return <div className="text-center py-8">Loading transactions...</div>;
   }
@@ -155,6 +166,9 @@ export default function Transactions() {
         <div className="flex gap-2">
           <button onClick={handleExport} className="btn btn-secondary">
             Export CSV
+          </button>
+          <button onClick={handleClearAll} className="btn btn-secondary text-red-600 hover:text-red-700 hover:bg-red-50">
+            Clear all transactions
           </button>
           <label className={`btn btn-primary cursor-pointer ${uploading ? 'opacity-70 pointer-events-none' : ''}`}>
             <ArrowUpTrayIcon className="h-5 w-5 mr-2" />
