@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { analyticsAPI, categoriesAPI } from '../services/api';
+import { analyticsAPI } from '../services/api';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell,
@@ -39,7 +39,6 @@ function TrendBadge({ value, invertColor = false }) {
 export default function Dashboard() {
   const navigate = useNavigate();
   const [dashboardData, setDashboardData] = useState(null);
-  const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     preset: 'this_month',
@@ -64,9 +63,16 @@ export default function Dashboard() {
     return p;
   }, [filters]);
 
-  useEffect(() => {
-    categoriesAPI.getAll().then((r) => setCategories(r.data)).catch(() => {});
-  }, []);
+  const categoriesWithData = useMemo(() => {
+    const breakdown = dashboardData?.category_breakdown || [];
+    const byId = new Map();
+    breakdown.forEach((row) => {
+      if (row.category_id != null && row.category != null && !byId.has(row.category_id)) {
+        byId.set(row.category_id, { id: row.category_id, name: row.category });
+      }
+    });
+    return [...byId.values()].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  }, [dashboardData?.category_breakdown]);
 
   useEffect(() => {
     setLoading(true);
@@ -152,7 +158,7 @@ export default function Dashboard() {
             <span className="text-sm font-medium text-gray-700">Category</span>
           </div>
           <div className="flex flex-wrap gap-2">
-            {[...categories].sort((a, b) => (a.name || '').localeCompare(b.name || '')).map((cat) => (
+            {categoriesWithData.map((cat) => (
               <button
                 key={cat.id}
                 type="button"
