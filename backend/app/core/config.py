@@ -1,9 +1,15 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, List
 import os
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore"
+    )
+
     PROJECT_NAME: str = "Budget App"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
@@ -25,10 +31,6 @@ class Settings(BaseSettings):
     # Railway-specific settings
     PORT: int = 8000
     ENVIRONMENT: str = "development"
-
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
 
     @property
     def CORS_ORIGINS(self) -> List[str]:
