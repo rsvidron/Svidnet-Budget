@@ -227,6 +227,15 @@ export default function Transactions() {
                   </div>
                 </th>
                 <th
+                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none min-w-[140px]"
+                  onClick={() => handleSort('description')}
+                >
+                  <div className="flex items-center gap-1">
+                    Description
+                    <SortIcon column="description" />
+                  </div>
+                </th>
+                <th
                   className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
                   onClick={() => handleSort('category')}
                 >
@@ -275,6 +284,9 @@ export default function Transactions() {
                     ) : (
                       transaction.merchant
                     )}
+                  </td>
+                  <td className="px-6 py-4 text-sm text-gray-900 max-w-[220px]" title={transaction.description || ''}>
+                    {transaction.description || '—'}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                     {editingId === transaction.id ? (
