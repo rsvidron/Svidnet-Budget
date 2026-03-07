@@ -38,11 +38,25 @@ export default function Budgets() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const categoryId = parseInt(formData.category_id, 10);
+    const amount = parseFloat(formData.amount);
+    if (Number.isNaN(categoryId) || !formData.category_id) {
+      alert('Please select a category');
+      return;
+    }
+    if (Number.isNaN(amount) || amount <= 0) {
+      alert('Please enter a valid amount');
+      return;
+    }
+    const startDate = formData.start_date
+      ? new Date(formData.start_date + 'T00:00:00').toISOString()
+      : new Date().toISOString().split('T')[0] + 'T00:00:00.000Z';
     try {
       await budgetsAPI.create({
-        ...formData,
-        category_id: parseInt(formData.category_id),
-        amount: parseFloat(formData.amount),
+        category_id: categoryId,
+        amount,
+        period: formData.period,
+        start_date: startDate,
       });
       setShowForm(false);
       setFormData({
