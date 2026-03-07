@@ -1,0 +1,279 @@
+import { useState, useEffect } from 'react';
+import { transactionsAPI, categoriesAPI } from '../services/api';
+import { format } from 'date-fns';
+import { ArrowUpTrayIcon, PencilIcon, TrashIcon } from '@heroicons/react/24/outline';
+
+export default function Transactions() {
+  const [transactions, setTransactions] = useState([]);
+  const [categories, setCategories] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filters, setFilters] = useState({
+    merchant: '',
+    category_id: '',
+  });
+  const [editingId, setEditingId] = useState(null);
+  const [editData, setEditData] = useState({});
+
+  useEffect(() => {
+    fetchTransactions();
+    fetchCategories();
+  }, []);
+
+  const fetchTransactions = async () => {
+    try {
+      const response = await transactionsAPI.getAll(filters);
+      setTransactions(response.data);
+    } catch (error) {
+      console.error('Failed to fetch transactions:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchCategories = async () => {
+    try {
+      const response = await categoriesAPI.getAll();
+      setCategories(response.data);
+    } catch (error) {
+      console.error('Failed to fetch categories:', error);
+    }
+  };
+
+  const handleFileUpload = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    try {
+      await transactionsAPI.upload(file);
+      fetchTransactions();
+      alert('Transactions imported successfully!');
+    } catch (error) {
+      console.error('Failed to upload file:', error);
+      alert('Failed to upload file. Please try again.');
+    }
+  };
+
+  const handleEdit = (transaction) => {
+    setEditingId(transaction.id);
+    setEditData({
+      merchant: transaction.merchant,
+      amount: transaction.amount,
+      category_id: transaction.category_id,
+    });
+  };
+
+  const handleSave = async (id) => {
+    try {
+      await transactionsAPI.update(id, editData);
+      setEditingId(null);
+      fetchTransactions();
+    } catch (error) {
+      console.error('Failed to update transaction:', error);
+    }
+  };
+
+  const handleDelete = async (id) => {
+    if (!confirm('Are you sure you want to delete this transaction?')) return;
+
+    try {
+      await transactionsAPI.delete(id);
+      fetchTransactions();
+    } catch (error) {
+      console.error('Failed to delete transaction:', error);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      const response = await transactionsAPI.export();
+      const blob = new Blob([response.data.csv_data], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`;
+      a.click();
+    } catch (error) {
+      console.error('Failed to export transactions:', error);
+    }
+  };
+
+  if (loading) {
+    return <div className="text-center py-8">Loading transactions...</div>;
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <h1 className="text-3xl font-bold text-gray-900">Transactions</h1>
+        <div className="flex gap-2">
+          <button onClick={handleExport} className="btn btn-secondary">
+            Export CSV
+          </button>
+          <label className="btn btn-primary cursor-pointer">
+            <ArrowUpTrayIcon className="h-5 w-5 mr-2" />
+            Upload Statement
+            <input type="file" className="hidden" accept=".csv,.pdf" onChange={handleFileUpload} />
+          </label>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+          <input
+            type="text"
+            placeholder="Search by merchant..."
+            className="input"
+            value={filters.merchant}
+            onChange={(e) => setFilters({ ...filters, merchant: e.target.value })}
+          />
+          <select
+            className="input"
+            value={filters.category_id}
+            onChange={(e) => setFilters({ ...filters, category_id: e.target.value })}
+          >
+            <option value="">All Categories</option>
+            {categories.map((cat) => (
+              <option key={cat.id} value={cat.id}>
+                {cat.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <button onClick={fetchTransactions} className="btn btn-primary mb-4">
+          Apply Filters
+        </button>
+
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Date
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Merchant
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Category
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Amount
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Type
+                </th>
+                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                  Actions
+                </th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {transactions.map((transaction) => (
+                <tr key={transaction.id}>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {format(new Date(transaction.date), 'MMM dd, yyyy')}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {editingId === transaction.id ? (
+                      <input
+                        type="text"
+                        className="input"
+                        value={editData.merchant}
+                        onChange={(e) => setEditData({ ...editData, merchant: e.target.value })}
+                      />
+                    ) : (
+                      transaction.merchant
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {editingId === transaction.id ? (
+                      <select
+                        className="input"
+                        value={editData.category_id || ''}
+                        onChange={(e) => setEditData({ ...editData, category_id: parseInt(e.target.value) })}
+                      >
+                        {categories.map((cat) => (
+                          <option key={cat.id} value={cat.id}>
+                            {cat.name}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span
+                        className="px-2 py-1 rounded-full text-xs"
+                        style={{
+                          backgroundColor: categories.find((c) => c.id === transaction.category_id)?.color + '20',
+                          color: categories.find((c) => c.id === transaction.category_id)?.color,
+                        }}
+                      >
+                        {categories.find((c) => c.id === transaction.category_id)?.name || 'Uncategorized'}
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                    {editingId === transaction.id ? (
+                      <input
+                        type="number"
+                        step="0.01"
+                        className="input"
+                        value={editData.amount}
+                        onChange={(e) => setEditData({ ...editData, amount: parseFloat(e.target.value) })}
+                      />
+                    ) : (
+                      `$${transaction.amount.toFixed(2)}`
+                    )}
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-sm">
+                    <span
+                      className={`px-2 py-1 rounded-full text-xs ${
+                        transaction.transaction_type === 'credit'
+                          ? 'bg-green-100 text-green-800'
+                          : 'bg-red-100 text-red-800'
+                      }`}
+                    >
+                      {transaction.transaction_type}
+                    </span>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                    {editingId === transaction.id ? (
+                      <>
+                        <button
+                          onClick={() => handleSave(transaction.id)}
+                          className="text-green-600 hover:text-green-900 mr-3"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingId(null)}
+                          className="text-gray-600 hover:text-gray-900"
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          onClick={() => handleEdit(transaction)}
+                          className="text-primary-600 hover:text-primary-900 mr-3"
+                        >
+                          <PencilIcon className="h-5 w-5" />
+                        </button>
+                        <button
+                          onClick={() => handleDelete(transaction.id)}
+                          className="text-red-600 hover:text-red-900"
+                        >
+                          <TrashIcon className="h-5 w-5" />
+                        </button>
+                      </>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
+}
