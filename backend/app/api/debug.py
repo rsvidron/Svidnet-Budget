@@ -188,6 +188,72 @@ async def environment_check() -> Dict[str, Any]:
     }
 
 
+@router.get("/test-jwt")
+async def test_jwt_cycle() -> Dict[str, Any]:
+    """
+    Test complete JWT encode/decode cycle
+    """
+    from app.core.security import decode_access_token, create_access_token
+    from jose import jwt, JWTError
+    from datetime import timedelta
+
+    results = {}
+
+    try:
+        # Step 1: Create a token
+        test_data = {"sub": 12345, "test": True}
+        test_token = create_access_token(test_data, expires_delta=timedelta(hours=1))
+        results["step1_create_token"] = {
+            "success": True,
+            "token": test_token,
+            "token_length": len(test_token)
+        }
+
+        # Step 2: Decode with our function
+        decoded_payload = decode_access_token(test_token)
+        results["step2_decode_with_function"] = {
+            "success": decoded_payload is not None,
+            "payload": decoded_payload
+        }
+
+        # Step 3: Decode directly with jose
+        try:
+            direct_decode = jwt.decode(test_token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            results["step3_decode_directly"] = {
+                "success": True,
+                "payload": direct_decode
+            }
+        except JWTError as e:
+            results["step3_decode_directly"] = {
+                "success": False,
+                "error": str(e)
+            }
+
+        # Step 4: Check settings
+        results["step4_settings"] = {
+            "secret_key_prefix": settings.SECRET_KEY[:15] + "...",
+            "secret_key_length": len(settings.SECRET_KEY),
+            "algorithm": settings.ALGORITHM
+        }
+
+        return {
+            "status": "completed",
+            "results": results,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except Exception as e:
+        logger.error(f"JWT test error: {e}")
+        import traceback
+        return {
+            "status": "error",
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "partial_results": results,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+
 @router.post("/test-token")
 async def test_token_decode(token: str) -> Dict[str, Any]:
     """
