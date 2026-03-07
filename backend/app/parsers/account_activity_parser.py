@@ -1,6 +1,9 @@
 """
-Parser for bank account activity CSV export format:
-  Transaction Date, Transaction Description, Amount, Category, Balance
+Parser for bank account activity CSV export format.
+
+Supports two variants:
+  - Spend: Transaction Date, Transaction Description, Amount, Category, Balance
+  - Savings: Transaction Date, Transaction Description, Amount, Balance (no Category)
 """
 import csv
 import re
@@ -8,12 +11,16 @@ from typing import List, Dict
 from datetime import datetime
 
 
-def parse_account_activity_csv(file_path: str) -> List[Dict]:
+def parse_account_activity_csv(file_path: str, default_category: str = None) -> List[Dict]:
     """
-    Parse CSV with columns: Transaction Date, Transaction Description, Amount, Category, Balance.
+    Parse CSV with columns: Transaction Date, Transaction Description, Amount, [Category], Balance.
+    If Category column is missing (savings format), use default_category (e.g. "Savings").
     Returns list of transaction dicts with: date, merchant, description, amount, transaction_type, category_name.
-    Skips PENDING rows. Uses category_name so the upload handler can map/create categories.
+    Skips PENDING rows.
     """
+    has_category_column = _csv_has_category_column(file_path)
+    default_cat = (default_category or "Savings").strip() if default_category else "Savings"
+
     transactions = []
     with open(file_path, "r", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -22,9 +29,11 @@ def parse_account_activity_csv(file_path: str) -> List[Dict]:
             description = (row.get("Transaction Description") or row.get("transaction description") or "").strip()
             amount_str = (row.get("Amount") or row.get("amount") or "0").strip()
             category_name = (row.get("Category") or row.get("category") or "").strip()
+            if not has_category_column:
+                category_name = default_cat
 
             # Skip PENDING rows
-            if date_str.upper().startswith("PENDING") or category_name.upper() == "PENDING":
+            if date_str.upper().startswith("PENDING") or (category_name and category_name.upper() == "PENDING"):
                 continue
             if not date_str:
                 continue
@@ -86,14 +95,30 @@ def _extract_merchant(description: str) -> str:
     return description[:50]
 
 
-def is_account_activity_csv(file_path: str) -> bool:
-    """Return True if the CSV has the account activity format (Transaction Date, Category columns)."""
+def _csv_has_category_column(file_path: str) -> bool:
+    """Return True if the CSV header includes a Category column (spend format)."""
     try:
         with open(file_path, "r", encoding="utf-8") as f:
             first = f.readline()
-            rest = f.read(500)
-        line = (first + rest).split("\n")[0]
-        lower = line.lower()
-        return "transaction date" in lower and "category" in lower
+        lower = first.lower()
+        return "category" in lower
+    except Exception:
+        return False
+
+
+def is_account_activity_csv(file_path: str) -> bool:
+    """
+    Return True if the CSV is account-activity format (spend or savings).
+    Spend: Transaction Date, Transaction Description, Amount, Category, Balance.
+    Savings: Transaction Date, Transaction Description, Amount, Balance (no Category).
+    """
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            first = f.readline()
+        lower = first.lower()
+        has_date = "transaction date" in lower
+        has_amount = "amount" in lower
+        has_desc = "transaction description" in lower
+        return has_date and has_amount and has_desc
     except Exception:
         return False

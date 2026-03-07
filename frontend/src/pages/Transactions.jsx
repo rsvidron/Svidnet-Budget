@@ -189,6 +189,9 @@ export default function Transactions() {
           </label>
         </div>
       </div>
+      <p className="text-sm text-gray-500">
+        Upload CSV or PDF. Supports <strong>spend</strong> account exports (with categories) and <strong>savings</strong> account exports (no category column — they’ll be categorized as Savings).
+      </p>
 
       {uploadMessage && (
         <div
