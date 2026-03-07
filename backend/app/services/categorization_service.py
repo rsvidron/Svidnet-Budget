@@ -7,7 +7,7 @@ class CategorizationService:
     DEFAULT_CATEGORIES = [
         {"name": "Groceries", "color": "#10B981", "keywords": ["grocery", "walmart", "target", "kroger", "publix", "safeway", "whole foods", "trader joe"]},
         {"name": "Restaurants", "color": "#F59E0B", "keywords": ["restaurant", "mcdonald", "burger", "pizza", "starbucks", "coffee", "cafe", "dining", "doordash", "ubereats"]},
-        {"name": "Mortgage/Rent", "color": "#EF4444", "keywords": ["mortgage", "rent", "housing", "apartment", "lease"]},
+        {"name": "Mortgage", "color": "#EF4444", "keywords": ["mortgage", "rent", "housing", "apartment", "lease"]},
         {"name": "Utilities", "color": "#8B5CF6", "keywords": ["electric", "gas", "water", "internet", "cable", "phone", "utility", "verizon", "att", "comcast"]},
         {"name": "Subscriptions", "color": "#EC4899", "keywords": ["netflix", "spotify", "hulu", "amazon prime", "disney", "subscription", "apple music", "youtube premium"]},
         {"name": "Travel", "color": "#06B6D4", "keywords": ["airline", "hotel", "airbnb", "uber", "lyft", "gas station", "shell", "exxon", "chevron", "rental car"]},
