@@ -170,6 +170,7 @@ async def environment_check() -> Dict[str, Any]:
         "ENVIRONMENT": os.getenv("ENVIRONMENT", "not set"),
         "DATABASE_URL": "set" if os.getenv("DATABASE_URL") else "not set",
         "SECRET_KEY": "set" if os.getenv("SECRET_KEY") else "not set",
+        "SECRET_KEY_LENGTH": len(os.getenv("SECRET_KEY", "")) if os.getenv("SECRET_KEY") else 0,
         "FRONTEND_URL": os.getenv("FRONTEND_URL", "not set"),
         "RAILWAY_PUBLIC_DOMAIN": os.getenv("RAILWAY_PUBLIC_DOMAIN", "not set"),
     }
@@ -178,3 +179,25 @@ async def environment_check() -> Dict[str, Any]:
         "environment_variables": env_vars,
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@router.post("/test-token")
+async def test_token_decode(token: str) -> Dict[str, Any]:
+    """
+    Test JWT token decoding for debugging
+    """
+    from app.core.security import decode_access_token
+    try:
+        payload = decode_access_token(token)
+        return {
+            "status": "success",
+            "payload": payload,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Token decode error: {e}")
+        return {
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
