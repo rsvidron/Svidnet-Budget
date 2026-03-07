@@ -20,7 +20,7 @@ def get_transactions(
     limit: int = 100,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
-    category_id: Optional[int] = None,
+    category_id: Optional[str] = None,
     merchant: Optional[str] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
@@ -31,9 +31,13 @@ def get_transactions(
         query = query.filter(Transaction.date >= start_date)
     if end_date:
         query = query.filter(Transaction.date <= end_date)
-    if category_id:
-        query = query.filter(Transaction.category_id == category_id)
-    if merchant:
+    if category_id and category_id.strip():
+        try:
+            cat_id = int(category_id)
+            query = query.filter(Transaction.category_id == cat_id)
+        except ValueError:
+            pass  # Ignore invalid category_id
+    if merchant and merchant.strip():
         query = query.filter(Transaction.merchant.ilike(f"%{merchant}%"))
 
     transactions = query.order_by(Transaction.date.desc()).offset(skip).limit(limit).all()

@@ -1,6 +1,6 @@
 from typing import List, Dict
 from datetime import datetime, timedelta
-from sqlalchemy import func, extract
+from sqlalchemy import func, extract, case
 from sqlalchemy.orm import Session
 from app.models import Transaction, Category, Budget, TransactionType
 
@@ -41,11 +41,11 @@ class AnalyticsService:
         results = self.db.query(
             extract('year', Transaction.date).label('year'),
             extract('month', Transaction.date).label('month'),
-            func.sum(func.case(
+            func.sum(case(
                 (Transaction.transaction_type == TransactionType.DEBIT, Transaction.amount),
                 else_=0
             )).label('expenses'),
-            func.sum(func.case(
+            func.sum(case(
                 (Transaction.transaction_type == TransactionType.CREDIT, Transaction.amount),
                 else_=0
             )).label('income')
