@@ -1,14 +1,24 @@
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, case
 from datetime import datetime
 import os
 from app.core.database import get_db
 from app.core.config import settings
-from app.models import User, Transaction, Category
-from app.schemas.transaction import Transaction as TransactionSchema, TransactionCreate, TransactionUpdate, TransactionFilter
+from app.models import User, Transaction, Category, Account, AccountType
+from app.models.transaction import TransactionType
+from app.schemas.transaction import (
+    Transaction as TransactionSchema,
+    TransactionCreate,
+    TransactionUpdate,
+    TransactionFilter,
+    BulkUpdateRequest,
+    BulkUpdateByMerchantRequest,
+    MerchantGroup,
+)
 from app.api.deps import get_current_user
+from app.api.accounts import get_or_create_account
 from app.parsers import PNCParser
 from app.parsers.account_activity_parser import (
     parse_account_activity_csv,
@@ -74,6 +84,29 @@ def _existing_transaction_keys(db: Session, user_id: int, min_date, max_date) ->
     return set((row.d, (row.m or "")[:200], round(float(row.amount), 2)) for row in q.all())
 
 
+def _infer_account_for_upload(file_name: str, file_ext: str, file_path: str) -> tuple[str, AccountType]:
+    """Pick an account name + type based on the file. Lightweight heuristics."""
+    name_lc = (file_name or "").lower()
+    if file_ext == ".csv" and is_account_activity_csv(file_path):
+        # Savings export has no Category column; the parser already knows. Re-detect cheaply.
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                header = f.readline().lower()
+            if "category" not in header:
+                return ("PNC Savings", AccountType.SAVINGS)
+        except Exception:
+            pass
+        return ("PNC Checking", AccountType.CHECKING)
+    if file_ext == ".pdf":
+        if "savings" in name_lc:
+            return ("PNC Savings", AccountType.SAVINGS)
+        if "credit" in name_lc or "card" in name_lc:
+            return ("PNC Credit Card", AccountType.CREDIT)
+        return ("PNC Checking", AccountType.CHECKING)
+    # Generic CSV: fall back to checking
+    return ("PNC Checking", AccountType.CHECKING)
+
+
 @router.get("/", response_model=List[TransactionSchema])
 def get_transactions(
     skip: int = 0,
@@ -81,6 +114,7 @@ def get_transactions(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     category_id: Optional[str] = None,
+    account_id: Optional[str] = None,
     merchant: Optional[str] = None,
     sort_by: Optional[str] = "date",
     sort_order: Optional[str] = "desc",
@@ -99,6 +133,12 @@ def get_transactions(
             query = query.filter(Transaction.category_id == cat_id)
         except ValueError:
             pass  # Ignore invalid category_id
+    if account_id and account_id.strip():
+        try:
+            acc_id = int(account_id)
+            query = query.filter(Transaction.account_id == acc_id)
+        except ValueError:
+            pass
     if merchant and merchant.strip():
         query = query.filter(Transaction.merchant.ilike(f"%{merchant}%"))
 
@@ -110,6 +150,7 @@ def get_transactions(
         "amount": Transaction.amount,
         "type": Transaction.transaction_type,
         "description": Transaction.description,
+        "account": Transaction.account_id,
     }
 
     sort_column = sort_column_map.get(sort_by, Transaction.date)
@@ -120,6 +161,218 @@ def get_transactions(
 
     transactions = query.offset(skip).limit(limit).all()
     return transactions
+
+
+@router.get("/merchants", response_model=List[MerchantGroup])
+def get_merchant_groups(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    category_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    merchant: Optional[str] = None,
+    sort_by: Optional[str] = "total_spend",
+    sort_order: Optional[str] = "desc",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Aggregate transactions by normalized merchant name. Honors filters."""
+    q = db.query(Transaction).filter(Transaction.user_id == current_user.id)
+    if start_date:
+        q = q.filter(Transaction.date >= start_date)
+    if end_date:
+        q = q.filter(Transaction.date <= end_date)
+    if category_id and category_id.strip():
+        try:
+            q = q.filter(Transaction.category_id == int(category_id))
+        except ValueError:
+            pass
+    if account_id and account_id.strip():
+        try:
+            q = q.filter(Transaction.account_id == int(account_id))
+        except ValueError:
+            pass
+    if merchant and merchant.strip():
+        q = q.filter(Transaction.merchant.ilike(f"%{merchant.strip()}%"))
+
+    rows = q.all()
+    if not rows:
+        return []
+
+    # Aggregate in Python — group counts are small (hundreds, not millions) and
+    # keeps category_ids/account_ids collection cross-dialect simple.
+    groups: dict[str, dict] = {}
+    for t in rows:
+        key = (t.merchant or "").strip()
+        display = key or "Unknown"
+        norm = display.lower()
+        g = groups.get(norm)
+        if g is None:
+            g = {
+                "merchant": display,
+                "count": 0,
+                "total_debit": 0.0,
+                "total_credit": 0.0,
+                "first_date": t.date,
+                "last_date": t.date,
+                "category_ids": set(),
+                "account_ids": set(),
+            }
+            groups[norm] = g
+        g["count"] += 1
+        amt = float(t.amount or 0.0)
+        if t.transaction_type == TransactionType.CREDIT:
+            g["total_credit"] += amt
+        else:
+            g["total_debit"] += amt
+        if t.date < g["first_date"]:
+            g["first_date"] = t.date
+        if t.date > g["last_date"]:
+            g["last_date"] = t.date
+        if t.category_id is not None:
+            g["category_ids"].add(t.category_id)
+        if t.account_id is not None:
+            g["account_ids"].add(t.account_id)
+
+    items = []
+    for g in groups.values():
+        items.append(MerchantGroup(
+            merchant=g["merchant"],
+            count=g["count"],
+            total_debit=round(g["total_debit"], 2),
+            total_credit=round(g["total_credit"], 2),
+            first_date=g["first_date"],
+            last_date=g["last_date"],
+            category_ids=sorted(g["category_ids"]),
+            account_ids=sorted(g["account_ids"]),
+        ))
+
+    reverse = (sort_order or "desc").lower() != "asc"
+    sort_key_map = {
+        "merchant": lambda x: x.merchant.lower(),
+        "count": lambda x: x.count,
+        "total_spend": lambda x: x.total_debit,
+        "total_income": lambda x: x.total_credit,
+        "last_date": lambda x: x.last_date,
+        "first_date": lambda x: x.first_date,
+    }
+    items.sort(key=sort_key_map.get(sort_by, sort_key_map["total_spend"]), reverse=reverse)
+    return items
+
+
+@router.post("/bulk-update")
+def bulk_update_transactions(
+    payload: BulkUpdateRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if not payload.ids:
+        return {"updated": 0}
+    if payload.category_id is None and payload.account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide category_id and/or account_id",
+        )
+
+    if payload.category_id is not None:
+        cat = (
+            db.query(Category)
+            .filter(Category.id == payload.category_id, Category.user_id == current_user.id)
+            .first()
+        )
+        if not cat:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Category not found",
+            )
+
+    if payload.account_id is not None:
+        acc = (
+            db.query(Account)
+            .filter(Account.id == payload.account_id, Account.user_id == current_user.id)
+            .first()
+        )
+        if not acc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found",
+            )
+
+    update_data = {}
+    if payload.category_id is not None:
+        update_data["category_id"] = payload.category_id
+        update_data["is_manually_categorized"] = True
+    if payload.account_id is not None:
+        update_data["account_id"] = payload.account_id
+
+    affected = (
+        db.query(Transaction)
+        .filter(
+            Transaction.user_id == current_user.id,
+            Transaction.id.in_(payload.ids),
+        )
+        .update(update_data, synchronize_session=False)
+    )
+    db.commit()
+    return {"updated": int(affected)}
+
+
+@router.post("/bulk-update-by-merchant")
+def bulk_update_by_merchant(
+    payload: BulkUpdateByMerchantRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    merchant = (payload.merchant or "").strip()
+    if not merchant:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="merchant is required",
+        )
+    if payload.category_id is None and payload.account_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide category_id and/or account_id",
+        )
+
+    if payload.category_id is not None:
+        cat = (
+            db.query(Category)
+            .filter(Category.id == payload.category_id, Category.user_id == current_user.id)
+            .first()
+        )
+        if not cat:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
+
+    if payload.account_id is not None:
+        acc = (
+            db.query(Account)
+            .filter(Account.id == payload.account_id, Account.user_id == current_user.id)
+            .first()
+        )
+        if not acc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Account not found")
+
+    q = db.query(Transaction).filter(
+        Transaction.user_id == current_user.id,
+        func.lower(func.trim(Transaction.merchant)) == merchant.lower(),
+    )
+    if payload.start_date:
+        q = q.filter(Transaction.date >= payload.start_date)
+    if payload.end_date:
+        q = q.filter(Transaction.date <= payload.end_date)
+    if payload.filter_account_id is not None:
+        q = q.filter(Transaction.account_id == payload.filter_account_id)
+
+    update_data = {}
+    if payload.category_id is not None:
+        update_data["category_id"] = payload.category_id
+        update_data["is_manually_categorized"] = True
+    if payload.account_id is not None:
+        update_data["account_id"] = payload.account_id
+
+    affected = q.update(update_data, synchronize_session=False)
+    db.commit()
+    return {"updated": int(affected)}
 
 
 @router.post("/", response_model=TransactionSchema)
@@ -139,10 +392,13 @@ def create_transaction(
     else:
         category_id = transaction_in.category_id
 
+    payload = transaction_in.model_dump()
+    payload.pop("category_id", None)
+
     transaction = Transaction(
         user_id=current_user.id,
         category_id=category_id,
-        **transaction_in.model_dump()
+        **payload,
     )
 
     db.add(transaction)
@@ -218,6 +474,7 @@ def delete_transaction(
 @router.post("/upload")
 async def upload_bank_statement(
     file: UploadFile = File(...),
+    account_id: Optional[int] = Form(None),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -247,6 +504,22 @@ async def upload_bank_statement(
     with open(file_path, "wb") as buffer:
         buffer.write(content)
 
+    # Resolve account: explicit > inferred > default
+    target_account: Optional[Account] = None
+    if account_id is not None:
+        target_account = (
+            db.query(Account)
+            .filter(Account.id == account_id, Account.user_id == current_user.id)
+            .first()
+        )
+        if not target_account:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found",
+            )
+
     try:
         if file_ext == ".csv" and is_account_activity_csv(file_path):
             transactions_data = parse_account_activity_csv(file_path)
@@ -274,6 +547,17 @@ async def upload_bank_statement(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No transactions found in this file. The PDF format may not be supported. Try CSV export from your bank, or ensure the PDF is a transaction list.",
         )
+
+    if target_account is None:
+        inferred_name, inferred_type = _infer_account_for_upload(file.filename, file_ext, file_path)
+        target_account = get_or_create_account(
+            db, current_user.id, inferred_name, account_type=inferred_type, institution="PNC"
+        )
+        # Make sure a default exists in case this is the user's first account.
+        if not db.query(Account).filter(
+            Account.user_id == current_user.id, Account.is_default == True
+        ).first():
+            target_account.is_default = True
 
     # Build set of existing (date, merchant, amount) to avoid duplicates
     def _to_date(d):
@@ -303,25 +587,26 @@ async def upload_bank_statement(
         if use_csv_categories and "category_name" in trans_data:
             category_name = trans_data.get("category_name")
             if category_name and str(category_name).strip():
-                category_id = _get_or_create_category(db, current_user.id, str(category_name).strip())
+                category_id_resolved = _get_or_create_category(db, current_user.id, str(category_name).strip())
             else:
-                category_id = None
-            if category_id is None:
-                category_id = _get_or_create_category(db, current_user.id, "Uncategorized")
+                category_id_resolved = None
+            if category_id_resolved is None:
+                category_id_resolved = _get_or_create_category(db, current_user.id, "Uncategorized")
             payload = {k: v for k, v in trans_data.items() if k != "category_name"}
         else:
-            category_id = categorization_service.categorize_transaction(
+            category_id_resolved = categorization_service.categorize_transaction(
                 current_user.id,
                 trans_data["merchant"],
                 trans_data.get("description", ""),
             )
-            if category_id is None:
-                category_id = _get_or_create_category(db, current_user.id, "Uncategorized")
+            if category_id_resolved is None:
+                category_id_resolved = _get_or_create_category(db, current_user.id, "Uncategorized")
             payload = trans_data
 
         transaction = Transaction(
             user_id=current_user.id,
-            category_id=category_id,
+            category_id=category_id_resolved,
+            account_id=target_account.id,
             source_file=file.filename,
             **payload
         )
@@ -336,10 +621,13 @@ async def upload_bank_statement(
     message = f"Successfully imported {created_count} transactions"
     if skipped_count:
         message += f". Skipped {skipped_count} duplicate(s)."
+    message += f" Account: {target_account.name}."
     return {
         "message": message,
         "count": created_count,
         "skipped": skipped_count,
+        "account_id": target_account.id,
+        "account_name": target_account.name,
     }
 
 
@@ -365,7 +653,7 @@ def export_transactions(
     output = StringIO()
     writer = csv.writer(output)
 
-    writer.writerow(['Date', 'Merchant', 'Description', 'Amount', 'Type', 'Category'])
+    writer.writerow(['Date', 'Merchant', 'Description', 'Amount', 'Type', 'Category', 'Account'])
 
     for trans in transactions:
         writer.writerow([
@@ -374,7 +662,8 @@ def export_transactions(
             trans.description or '',
             trans.amount,
             trans.transaction_type.value,
-            trans.category.name if trans.category else 'Uncategorized'
+            trans.category.name if trans.category else 'Uncategorized',
+            trans.account.name if trans.account else '',
         ])
 
     return {

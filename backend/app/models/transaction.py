@@ -17,6 +17,7 @@ class Transaction(Base):
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     category_id = Column(Integer, ForeignKey("categories.id"), nullable=True)
+    account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True, index=True)
     date = Column(DateTime(timezone=True), nullable=False)
     merchant = Column(String, nullable=False)
     description = Column(String, nullable=True)
@@ -31,3 +32,4 @@ class Transaction(Base):
 
     user = relationship("User", back_populates="transactions")
     category = relationship("Category", back_populates="transactions")
+    account = relationship("Account", back_populates="transactions")

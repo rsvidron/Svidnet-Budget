@@ -5,10 +5,12 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 import os
 import logging
+from sqlalchemy import inspect, text
 from app.core.config import settings
 from app.core.database import engine, Base, SessionLocal
-from app.api import auth, transactions, categories, budgets, savings_goals, analytics, debug
+from app.api import auth, transactions, categories, budgets, savings_goals, analytics, debug, accounts
 from app.utils.seed_db import seed_default_user
+from app.utils.migrations import ensure_account_id_column, backfill_default_accounts
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +25,12 @@ except Exception as e:
     logger.error(f"Failed to create database tables: {e}")
     # Don't fail startup, just log the error
 
+# Idempotent migrations for columns not handled by create_all (existing tables).
+try:
+    ensure_account_id_column(engine)
+except Exception as e:
+    logger.error(f"Migration ensure_account_id_column failed: {e}")
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     version=settings.VERSION,
@@ -36,10 +44,13 @@ async def startup_event():
     logger.info(f"Database URL: {settings.DATABASE_URL[:20]}...")
     logger.info(f"Port: {settings.PORT}")
 
-    # Seed default user
+    # Seed default user, then backfill accounts for any user missing them.
     db = SessionLocal()
     try:
         seed_default_user(db)
+        backfilled = backfill_default_accounts(db)
+        if backfilled:
+            logger.info(f"Backfilled default accounts for {backfilled} user(s).")
     finally:
         db.close()
 
@@ -58,6 +69,7 @@ app.include_router(budgets.router, prefix=f"{settings.API_V1_STR}/budgets", tags
 app.include_router(savings_goals.router, prefix=f"{settings.API_V1_STR}/savings-goals", tags=["savings-goals"])
 app.include_router(analytics.router, prefix=f"{settings.API_V1_STR}/analytics", tags=["analytics"])
 app.include_router(debug.router, prefix=f"{settings.API_V1_STR}/debug", tags=["debug"])
+app.include_router(accounts.router, prefix=f"{settings.API_V1_STR}/accounts", tags=["accounts"])
 
 
 @app.get("/health")

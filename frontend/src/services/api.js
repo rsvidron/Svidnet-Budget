@@ -51,18 +51,37 @@ export const authAPI = {
 
 export const transactionsAPI = {
   getAll: (params) => api.get('/transactions/', { params }),
+  getMerchants: (params) => api.get('/transactions/merchants', { params }),
+  bulkUpdate: (data) => api.post('/transactions/bulk-update', data),
+  bulkUpdateByMerchant: (data) => api.post('/transactions/bulk-update-by-merchant', data),
   create: (data) => api.post('/transactions/', data),
   update: (id, data) => api.put(`/transactions/${id}`, data),
   delete: (id) => api.delete(`/transactions/${id}`),
   clear: () => api.delete('/transactions/clear'),
-  upload: (file) => {
+  upload: (file, accountId) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (accountId !== undefined && accountId !== null && accountId !== '') {
+      formData.append('account_id', accountId);
+    }
     return api.post('/transactions/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
     });
   },
   export: (params) => api.post('/transactions/export', null, { params }),
+};
+
+export const accountsAPI = {
+  getAll: () => api.get('/accounts/'),
+  create: (data) => api.post('/accounts/', data),
+  update: (id, data) => api.put(`/accounts/${id}`, data),
+  delete: (id, reassignTo) => {
+    const params = {};
+    if (reassignTo !== undefined && reassignTo !== null && reassignTo !== '') {
+      params.reassign_to = reassignTo;
+    }
+    return api.delete(`/accounts/${id}`, { params });
+  },
 };
 
 export const categoriesAPI = {

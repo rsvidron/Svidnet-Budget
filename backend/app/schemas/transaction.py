@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from app.models.transaction import TransactionType
 
@@ -11,6 +11,7 @@ class TransactionBase(BaseModel):
     amount: float
     transaction_type: TransactionType
     category_id: Optional[int] = None
+    account_id: Optional[int] = None
 
 
 class TransactionCreate(TransactionBase):
@@ -22,6 +23,7 @@ class TransactionUpdate(BaseModel):
     description: Optional[str] = None
     amount: Optional[float] = None
     category_id: Optional[int] = None
+    account_id: Optional[int] = None
 
 
 class Transaction(TransactionBase):
@@ -40,5 +42,32 @@ class TransactionFilter(BaseModel):
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     category_id: Optional[int] = None
+    account_id: Optional[int] = None
     merchant: Optional[str] = None
     transaction_type: Optional[TransactionType] = None
+
+
+class BulkUpdateRequest(BaseModel):
+    ids: List[int]
+    category_id: Optional[int] = None
+    account_id: Optional[int] = None
+
+
+class BulkUpdateByMerchantRequest(BaseModel):
+    merchant: str
+    category_id: Optional[int] = None
+    account_id: Optional[int] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    filter_account_id: Optional[int] = None
+
+
+class MerchantGroup(BaseModel):
+    merchant: str
+    count: int
+    total_debit: float
+    total_credit: float
+    first_date: datetime
+    last_date: datetime
+    category_ids: List[int]
+    account_ids: List[int]

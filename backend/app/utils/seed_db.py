@@ -2,7 +2,8 @@
 Database seeding utility - creates default admin user
 """
 from sqlalchemy.orm import Session
-from app.models import User
+from app.models import User, Account
+from app.models.account import AccountType
 from app.core.security import get_password_hash
 from app.services.categorization_service import CategorizationService
 import logging
@@ -48,11 +49,22 @@ def seed_default_user(db: Session) -> None:
         categorization_service = CategorizationService(db)
         categorization_service.initialize_default_categories(admin_user.id)
 
+        # Seed a default account so the upload flow always has somewhere to land.
+        default_account = Account(
+            user_id=admin_user.id,
+            name="Default",
+            account_type=AccountType.OTHER,
+            is_default=True,
+        )
+        db.add(default_account)
+        db.commit()
+
         logger.info(f"✅ Default admin user created successfully!")
         logger.info(f"   Email: {DEFAULT_ADMIN_EMAIL}")
         logger.info(f"   Username: {DEFAULT_ADMIN_USERNAME}")
         logger.info(f"   Password: {DEFAULT_ADMIN_PASSWORD}")
         logger.info(f"   Categories: 12 default categories initialized")
+        logger.info(f"   Default account created: '{default_account.name}'")
 
     except Exception as e:
         logger.error(f"❌ Failed to create default admin user: {e}")

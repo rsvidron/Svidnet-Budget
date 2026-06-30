@@ -5,6 +5,7 @@ import {
   CreditCardIcon,
   ChartBarIcon,
   TagIcon,
+  BuildingLibraryIcon,
   ArrowRightOnRectangleIcon,
 } from '@heroicons/react/24/outline';
 
@@ -20,6 +21,7 @@ export default function Layout() {
   const navigation = [
     { name: 'Dashboard', href: '/', icon: HomeIcon },
     { name: 'Transactions', href: '/transactions', icon: CreditCardIcon },
+    { name: 'Accounts', href: '/accounts', icon: BuildingLibraryIcon },
     { name: 'Budgets', href: '/budgets', icon: ChartBarIcon },
     { name: 'Savings Goals', href: '/savings-goals', icon: HomeIcon },
     { name: 'Categories', href: '/categories', icon: TagIcon },

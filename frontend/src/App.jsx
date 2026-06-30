@@ -7,6 +7,7 @@ import Transactions from './pages/Transactions';
 import Budgets from './pages/Budgets';
 import SavingsGoals from './pages/SavingsGoals';
 import Categories from './pages/Categories';
+import Accounts from './pages/Accounts';
 import Layout from './components/Layout';
 
 function PrivateRoute({ children }) {
@@ -33,6 +34,7 @@ function App() {
           <Route path="budgets" element={<Budgets />} />
           <Route path="savings-goals" element={<SavingsGoals />} />
           <Route path="categories" element={<Categories />} />
+          <Route path="accounts" element={<Accounts />} />
         </Route>
       </Routes>
     </Router>

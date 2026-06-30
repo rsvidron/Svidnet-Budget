@@ -4,6 +4,7 @@ from .transaction import Transaction, TransactionType
 from .budget import Budget
 from .savings_goal import SavingsGoal
 from .categorization_rule import CategorizationRule
+from .account import Account, AccountType
 
 __all__ = [
     "User",
@@ -13,4 +14,6 @@ __all__ = [
     "Budget",
     "SavingsGoal",
     "CategorizationRule",
+    "Account",
+    "AccountType",
 ]

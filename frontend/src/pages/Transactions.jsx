@@ -1,45 +1,87 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, Fragment } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { transactionsAPI, categoriesAPI } from '../services/api';
+import { transactionsAPI, categoriesAPI, accountsAPI } from '../services/api';
 import { format } from 'date-fns';
-import { ArrowUpTrayIcon, PencilIcon, TrashIcon, ChevronUpIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import {
+  ArrowUpTrayIcon,
+  PencilIcon,
+  TrashIcon,
+  ChevronUpIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
+} from '@heroicons/react/24/outline';
+
+const ACCOUNT_TYPE_LABEL = {
+  checking: 'Checking',
+  savings: 'Savings',
+  credit: 'Credit',
+  other: 'Other',
+};
 
 export default function Transactions() {
   const [searchParams] = useSearchParams();
   const categoryFromUrl = searchParams.get('category_id') || '';
+  const [view, setView] = useState('list'); // 'list' | 'merchant'
   const [transactions, setTransactions] = useState([]);
+  const [merchantGroups, setMerchantGroups] = useState([]);
   const [categories, setCategories] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     merchant: '',
     category_id: categoryFromUrl,
+    account_id: '',
   });
-  const [sortConfig, setSortConfig] = useState({
-    sortBy: 'date',
-    sortOrder: 'desc',
-  });
+  const [sortConfig, setSortConfig] = useState({ sortBy: 'date', sortOrder: 'desc' });
+  const [merchantSort, setMerchantSort] = useState({ sortBy: 'total_spend', sortOrder: 'desc' });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
   const [uploading, setUploading] = useState(false);
+  const [uploadAccountId, setUploadAccountId] = useState('');
   const [uploadMessage, setUploadMessage] = useState(null);
+
+  // Multi-select state (list view)
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [bulkCategoryId, setBulkCategoryId] = useState('');
+  const [bulkAccountId, setBulkAccountId] = useState('');
+
+  // Expanded merchant rows + per-merchant transactions cache
+  const [expandedMerchants, setExpandedMerchants] = useState({});
+  const [merchantTransactions, setMerchantTransactions] = useState({});
+
+  // Rule prompt modal
+  const [rulePrompt, setRulePrompt] = useState(null); // { merchant, category_id, category_name }
+
+  const categoriesById = useMemo(() => {
+    const m = {};
+    categories.forEach((c) => { m[c.id] = c; });
+    return m;
+  }, [categories]);
+
+  const accountsById = useMemo(() => {
+    const m = {};
+    accounts.forEach((a) => { m[a.id] = a; });
+    return m;
+  }, [accounts]);
 
   useEffect(() => {
     fetchCategories();
+    fetchAccounts();
   }, []);
+
   useEffect(() => {
     if (categoryFromUrl) {
       setFilters((f) => ({ ...f, category_id: categoryFromUrl }));
     }
   }, [categoryFromUrl]);
-  useEffect(() => {
-    fetchTransactions();
-  }, [filters.category_id, filters.merchant, sortConfig]);
 
   useEffect(() => {
-    if (loading === false) {
+    if (view === 'list') {
       fetchTransactions();
+    } else {
+      fetchMerchantGroups();
     }
-  }, [sortConfig]);
+  }, [view, filters.category_id, filters.merchant, filters.account_id, sortConfig, merchantSort]);
 
   const fetchTransactions = async () => {
     try {
@@ -47,10 +89,26 @@ export default function Transactions() {
         ...filters,
         sort_by: sortConfig.sortBy,
         sort_order: sortConfig.sortOrder,
+        limit: 500,
       });
       setTransactions(response.data);
     } catch (error) {
       console.error('Failed to fetch transactions:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchMerchantGroups = async () => {
+    try {
+      const response = await transactionsAPI.getMerchants({
+        ...filters,
+        sort_by: merchantSort.sortBy,
+        sort_order: merchantSort.sortOrder,
+      });
+      setMerchantGroups(response.data);
+    } catch (error) {
+      console.error('Failed to fetch merchant groups:', error);
     } finally {
       setLoading(false);
     }
@@ -65,6 +123,15 @@ export default function Transactions() {
     }
   };
 
+  const fetchAccounts = async () => {
+    try {
+      const response = await accountsAPI.getAll();
+      setAccounts(response.data);
+    } catch (error) {
+      console.error('Failed to fetch accounts:', error);
+    }
+  };
+
   const handleFileUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -73,12 +140,14 @@ export default function Transactions() {
     setUploadMessage(null);
     setUploading(true);
     try {
-      const { data } = await transactionsAPI.upload(file);
+      const { data } = await transactionsAPI.upload(file, uploadAccountId || null);
       setUploadMessage({
         type: 'success',
         text: data.message || `Imported ${data.count ?? 0} transactions.`,
       });
-      fetchTransactions();
+      fetchAccounts();
+      if (view === 'list') fetchTransactions();
+      else fetchMerchantGroups();
     } catch (error) {
       const detail = error.response?.data?.detail;
       const message = typeof detail === 'string'
@@ -98,6 +167,7 @@ export default function Transactions() {
       merchant: transaction.merchant,
       amount: transaction.amount,
       category_id: transaction.category_id,
+      account_id: transaction.account_id,
     });
   };
 
@@ -113,7 +183,6 @@ export default function Transactions() {
 
   const handleDelete = async (id) => {
     if (!confirm('Are you sure you want to delete this transaction?')) return;
-
     try {
       await transactionsAPI.delete(id);
       fetchTransactions();
@@ -129,11 +198,18 @@ export default function Transactions() {
     }));
   };
 
-  const SortIcon = ({ column }) => {
-    if (sortConfig.sortBy !== column) {
+  const handleMerchantSort = (column) => {
+    setMerchantSort((prev) => ({
+      sortBy: column,
+      sortOrder: prev.sortBy === column && prev.sortOrder === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const SortIcon = ({ column, active }) => {
+    if (active.sortBy !== column) {
       return <ChevronUpIcon className="w-4 h-4 text-gray-400" />;
     }
-    return sortConfig.sortOrder === 'asc' ? (
+    return active.sortOrder === 'asc' ? (
       <ChevronUpIcon className="w-4 h-4 text-blue-600" />
     ) : (
       <ChevronDownIcon className="w-4 h-4 text-blue-600" />
@@ -155,15 +231,145 @@ export default function Transactions() {
   };
 
   const handleClearAll = async () => {
-    if (!confirm('Delete ALL your transactions? Categories will be kept.')) return;
+    if (!confirm('Delete ALL your transactions? Categories and accounts will be kept.')) return;
     try {
       const { data } = await transactionsAPI.clear();
       setUploadMessage({ type: 'success', text: data.message });
-      fetchTransactions();
+      if (view === 'list') fetchTransactions();
+      else fetchMerchantGroups();
     } catch (error) {
       const detail = error.response?.data?.detail;
       const text = typeof detail === 'string' ? detail : Array.isArray(detail) ? detail[0]?.msg || 'Failed to clear.' : 'Failed to clear.';
       setUploadMessage({ type: 'error', text: typeof text === 'string' ? text : 'Failed to clear.' });
+    }
+  };
+
+  // ---- Multi-select / bulk update -----------------------------------------
+  const toggleSelected = (id) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const togglePageSelected = () => {
+    setSelectedIds((prev) => {
+      const allSelected = transactions.every((t) => prev.has(t.id));
+      if (allSelected) return new Set();
+      const next = new Set(prev);
+      transactions.forEach((t) => next.add(t.id));
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const applyBulk = async () => {
+    if (!bulkCategoryId && !bulkAccountId) return;
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) return;
+
+    try {
+      const body = { ids };
+      if (bulkCategoryId) body.category_id = parseInt(bulkCategoryId);
+      if (bulkAccountId) body.account_id = parseInt(bulkAccountId);
+      const { data } = await transactionsAPI.bulkUpdate(body);
+      setUploadMessage({ type: 'success', text: `Updated ${data.updated} transaction(s).` });
+
+      // If category was changed, and selected rows share the same merchant, offer to create a rule.
+      if (bulkCategoryId) {
+        const selectedRows = transactions.filter((t) => selectedIds.has(t.id));
+        const merchants = new Set(selectedRows.map((t) => (t.merchant || '').trim().toLowerCase()));
+        if (merchants.size === 1) {
+          const sample = selectedRows[0].merchant;
+          const cat = categoriesById[parseInt(bulkCategoryId)];
+          setRulePrompt({
+            merchant: sample,
+            category_id: parseInt(bulkCategoryId),
+            category_name: cat?.name || 'this category',
+          });
+        }
+      }
+
+      clearSelection();
+      setBulkCategoryId('');
+      setBulkAccountId('');
+      fetchTransactions();
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setUploadMessage({ type: 'error', text: typeof detail === 'string' ? detail : 'Bulk update failed.' });
+    }
+  };
+
+  // ---- Merchant view actions ----------------------------------------------
+  const toggleMerchantExpand = async (merchant) => {
+    setExpandedMerchants((prev) => ({ ...prev, [merchant]: !prev[merchant] }));
+    if (!merchantTransactions[merchant]) {
+      try {
+        const response = await transactionsAPI.getAll({
+          merchant,
+          category_id: filters.category_id,
+          account_id: filters.account_id,
+          sort_by: 'date',
+          sort_order: 'desc',
+          limit: 500,
+        });
+        // Server uses ilike '%merchant%'; tighten to exact-merchant match here.
+        const target = (merchant || '').trim().toLowerCase();
+        const exact = response.data.filter(
+          (t) => (t.merchant || '').trim().toLowerCase() === target,
+        );
+        setMerchantTransactions((prev) => ({ ...prev, [merchant]: exact }));
+      } catch (error) {
+        console.error('Failed to load merchant transactions:', error);
+      }
+    }
+  };
+
+  const recategorizeMerchant = async (merchant) => {
+    const target = prompt(`Recategorize ALL "${merchant}" transactions to which category?\n\n${categories.map((c) => `• ${c.name}`).join('\n')}\n\nType the category name:`);
+    if (!target) return;
+    const cat = categories.find((c) => c.name.toLowerCase() === target.trim().toLowerCase());
+    if (!cat) {
+      setUploadMessage({ type: 'error', text: `Category "${target}" not found.` });
+      return;
+    }
+    try {
+      const { data } = await transactionsAPI.bulkUpdateByMerchant({
+        merchant,
+        category_id: cat.id,
+      });
+      setUploadMessage({ type: 'success', text: `Updated ${data.updated} "${merchant}" transaction(s) → ${cat.name}.` });
+      setRulePrompt({ merchant, category_id: cat.id, category_name: cat.name });
+      // Invalidate caches and refresh
+      setMerchantTransactions({});
+      setExpandedMerchants({});
+      fetchMerchantGroups();
+    } catch (error) {
+      const detail = error.response?.data?.detail;
+      setUploadMessage({ type: 'error', text: typeof detail === 'string' ? detail : 'Recategorize failed.' });
+    }
+  };
+
+  // ---- Rule prompt --------------------------------------------------------
+  const acceptRule = async () => {
+    if (!rulePrompt) return;
+    try {
+      const keyword = (rulePrompt.merchant || '').trim().toLowerCase();
+      await categoriesAPI.addRule({
+        category_id: rulePrompt.category_id,
+        keyword,
+        priority: 10,
+      });
+      setUploadMessage({
+        type: 'success',
+        text: `Rule added: future "${rulePrompt.merchant}" transactions → ${rulePrompt.category_name}.`,
+      });
+    } catch (error) {
+      setUploadMessage({ type: 'error', text: 'Failed to add rule.' });
+    } finally {
+      setRulePrompt(null);
     }
   };
 
@@ -175,7 +381,18 @@ export default function Transactions() {
     <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-900">Transactions</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
+          <select
+            className="input"
+            value={uploadAccountId}
+            onChange={(e) => setUploadAccountId(e.target.value)}
+            title="Upload into this account (or leave blank for auto-detect)"
+          >
+            <option value="">Upload to: auto-detect</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
+            ))}
+          </select>
           <button onClick={handleExport} className="btn btn-secondary">
             Export CSV
           </button>
@@ -190,7 +407,7 @@ export default function Transactions() {
         </div>
       </div>
       <p className="text-sm text-gray-500">
-        Upload CSV or PDF. Supports <strong>spend</strong> account exports (with categories) and <strong>savings</strong> account exports (no category column — they’ll be categorized as Savings).
+        Upload CSV or PDF. Spend, savings, and credit-card statements are auto-tagged to an account. Override with the dropdown if needed.
       </p>
 
       {uploadMessage && (
@@ -207,7 +424,36 @@ export default function Transactions() {
       )}
 
       <div className="card">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
+        {/* View toggle */}
+        <div className="flex items-center gap-2 mb-4">
+          <div className="inline-flex rounded-md shadow-sm" role="group">
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm font-medium border rounded-l-md ${
+                view === 'list'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+              onClick={() => setView('list')}
+            >
+              List
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm font-medium border rounded-r-md -ml-px ${
+                view === 'merchant'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+              onClick={() => setView('merchant')}
+            >
+              By Merchant
+            </button>
+          </div>
+        </div>
+
+        {/* Filters */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
           <input
             type="text"
             placeholder="Search by merchant..."
@@ -222,189 +468,294 @@ export default function Transactions() {
           >
             <option value="">All Categories</option>
             {categories.map((cat) => (
-              <option key={cat.id} value={cat.id}>
-                {cat.name}
-              </option>
+              <option key={cat.id} value={cat.id}>{cat.name}</option>
+            ))}
+          </select>
+          <select
+            className="input"
+            value={filters.account_id}
+            onChange={(e) => setFilters({ ...filters, account_id: e.target.value })}
+          >
+            <option value="">All Accounts</option>
+            {accounts.map((a) => (
+              <option key={a.id} value={a.id}>{a.name}</option>
             ))}
           </select>
         </div>
 
-        <button onClick={fetchTransactions} className="btn btn-primary mb-4">
-          Apply Filters
-        </button>
-
-        <div className="overflow-x-auto">
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
-                  onClick={() => handleSort('date')}
-                >
-                  <div className="flex items-center gap-1">
-                    Date
-                    <SortIcon column="date" />
-                  </div>
-                </th>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
-                  onClick={() => handleSort('merchant')}
-                >
-                  <div className="flex items-center gap-1">
-                    Merchant
-                    <SortIcon column="merchant" />
-                  </div>
-                </th>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none min-w-[140px]"
-                  onClick={() => handleSort('description')}
-                >
-                  <div className="flex items-center gap-1">
-                    Description
-                    <SortIcon column="description" />
-                  </div>
-                </th>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
-                  onClick={() => handleSort('category')}
-                >
-                  <div className="flex items-center gap-1">
-                    Category
-                    <SortIcon column="category" />
-                  </div>
-                </th>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
-                  onClick={() => handleSort('amount')}
-                >
-                  <div className="flex items-center gap-1">
-                    Amount
-                    <SortIcon column="amount" />
-                  </div>
-                </th>
-                <th
-                  className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none"
-                  onClick={() => handleSort('type')}
-                >
-                  <div className="flex items-center gap-1">
-                    Type
-                    <SortIcon column="type" />
-                  </div>
-                </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
-                  Actions
-                </th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {transactions.map((transaction) => (
-                <tr key={transaction.id}>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {format(new Date(transaction.date), 'MMM dd, yyyy')}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {editingId === transaction.id ? (
-                      <input
-                        type="text"
-                        className="input"
-                        value={editData.merchant}
-                        onChange={(e) => setEditData({ ...editData, merchant: e.target.value })}
-                      />
-                    ) : (
-                      transaction.merchant
-                    )}
-                  </td>
-                  <td className="px-6 py-4 text-sm text-gray-900 max-w-[220px]" title={transaction.description || ''}>
-                    {transaction.description || '—'}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {editingId === transaction.id ? (
-                      <select
-                        className="input"
-                        value={editData.category_id || ''}
-                        onChange={(e) => setEditData({ ...editData, category_id: parseInt(e.target.value) })}
-                      >
-                        {categories.map((cat) => (
-                          <option key={cat.id} value={cat.id}>
-                            {cat.name}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <span
-                        className="px-2 py-1 rounded-full text-xs"
-                        style={{
-                          backgroundColor: categories.find((c) => c.id === transaction.category_id)?.color + '20',
-                          color: categories.find((c) => c.id === transaction.category_id)?.color,
-                        }}
-                      >
-                        {categories.find((c) => c.id === transaction.category_id)?.name || 'Uncategorized'}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                    {editingId === transaction.id ? (
-                      <input
-                        type="number"
-                        step="0.01"
-                        className="input"
-                        value={editData.amount}
-                        onChange={(e) => setEditData({ ...editData, amount: parseFloat(e.target.value) })}
-                      />
-                    ) : (
-                      `$${transaction.amount.toFixed(2)}`
-                    )}
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm">
-                    <span
-                      className={`px-2 py-1 rounded-full text-xs ${
-                        transaction.transaction_type === 'credit'
-                          ? 'bg-green-100 text-green-800'
-                          : 'bg-red-100 text-red-800'
-                      }`}
-                    >
-                      {transaction.transaction_type}
-                    </span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                    {editingId === transaction.id ? (
-                      <>
-                        <button
-                          onClick={() => handleSave(transaction.id)}
-                          className="text-green-600 hover:text-green-900 mr-3"
-                        >
-                          Save
-                        </button>
-                        <button
-                          onClick={() => setEditingId(null)}
-                          className="text-gray-600 hover:text-gray-900"
-                        >
-                          Cancel
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          onClick={() => handleEdit(transaction)}
-                          className="text-primary-600 hover:text-primary-900 mr-3"
-                        >
-                          <PencilIcon className="h-5 w-5" />
-                        </button>
-                        <button
-                          onClick={() => handleDelete(transaction.id)}
-                          className="text-red-600 hover:text-red-900"
-                        >
-                          <TrashIcon className="h-5 w-5" />
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
+        {/* Bulk action bar */}
+        {view === 'list' && selectedIds.size > 0 && (
+          <div className="sticky top-0 z-10 mb-4 p-3 bg-blue-50 border border-blue-200 rounded-lg flex flex-wrap items-center gap-3">
+            <span className="text-sm font-medium text-blue-900">
+              {selectedIds.size} selected
+            </span>
+            <select
+              className="input"
+              value={bulkCategoryId}
+              onChange={(e) => setBulkCategoryId(e.target.value)}
+            >
+              <option value="">Change category to…</option>
+              {categories.map((cat) => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
               ))}
-            </tbody>
-          </table>
-        </div>
+            </select>
+            <select
+              className="input"
+              value={bulkAccountId}
+              onChange={(e) => setBulkAccountId(e.target.value)}
+            >
+              <option value="">Move to account…</option>
+              {accounts.map((a) => (
+                <option key={a.id} value={a.id}>{a.name}</option>
+              ))}
+            </select>
+            <button
+              onClick={applyBulk}
+              disabled={!bulkCategoryId && !bulkAccountId}
+              className="btn btn-primary"
+            >
+              Apply
+            </button>
+            <button onClick={clearSelection} className="btn btn-secondary">
+              Clear selection
+            </button>
+          </div>
+        )}
+
+        {/* ----- LIST VIEW ----- */}
+        {view === 'list' && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 w-10">
+                    <input
+                      type="checkbox"
+                      checked={transactions.length > 0 && transactions.every((t) => selectedIds.has(t.id))}
+                      onChange={togglePageSelected}
+                    />
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('date')}>
+                    <div className="flex items-center gap-1">Date <SortIcon column="date" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('merchant')}>
+                    <div className="flex items-center gap-1">Merchant <SortIcon column="merchant" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none min-w-[140px]" onClick={() => handleSort('description')}>
+                    <div className="flex items-center gap-1">Description <SortIcon column="description" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('category')}>
+                    <div className="flex items-center gap-1">Category <SortIcon column="category" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('account')}>
+                    <div className="flex items-center gap-1">Account <SortIcon column="account" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('amount')}>
+                    <div className="flex items-center gap-1">Amount <SortIcon column="amount" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleSort('type')}>
+                    <div className="flex items-center gap-1">Type <SortIcon column="type" active={sortConfig} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {transactions.map((t) => (
+                  <tr key={t.id} className={selectedIds.has(t.id) ? 'bg-blue-50' : ''}>
+                    <td className="px-3 py-4">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(t.id)}
+                        onChange={() => toggleSelected(t.id)}
+                      />
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {format(new Date(t.date), 'MMM dd, yyyy')}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {editingId === t.id ? (
+                        <input type="text" className="input" value={editData.merchant} onChange={(e) => setEditData({ ...editData, merchant: e.target.value })} />
+                      ) : t.merchant}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-900 max-w-[220px]" title={t.description || ''}>
+                      {t.description || '—'}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {editingId === t.id ? (
+                        <select className="input" value={editData.category_id || ''} onChange={(e) => setEditData({ ...editData, category_id: parseInt(e.target.value) })}>
+                          {categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}
+                        </select>
+                      ) : (
+                        <span className="px-2 py-1 rounded-full text-xs" style={{
+                          backgroundColor: (categoriesById[t.category_id]?.color || '#999') + '20',
+                          color: categoriesById[t.category_id]?.color || '#666',
+                        }}>
+                          {categoriesById[t.category_id]?.name || 'Uncategorized'}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {editingId === t.id ? (
+                        <select className="input" value={editData.account_id || ''} onChange={(e) => setEditData({ ...editData, account_id: parseInt(e.target.value) })}>
+                          <option value="">—</option>
+                          {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+                        </select>
+                      ) : (
+                        <span className="text-xs text-gray-700">{accountsById[t.account_id]?.name || '—'}</span>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                      {editingId === t.id ? (
+                        <input type="number" step="0.01" className="input" value={editData.amount} onChange={(e) => setEditData({ ...editData, amount: parseFloat(e.target.value) })} />
+                      ) : `$${Number(t.amount).toFixed(2)}`}
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm">
+                      <span className={`px-2 py-1 rounded-full text-xs ${t.transaction_type === 'credit' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+                        {t.transaction_type}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      {editingId === t.id ? (
+                        <>
+                          <button onClick={() => handleSave(t.id)} className="text-green-600 hover:text-green-900 mr-3">Save</button>
+                          <button onClick={() => setEditingId(null)} className="text-gray-600 hover:text-gray-900">Cancel</button>
+                        </>
+                      ) : (
+                        <>
+                          <button onClick={() => handleEdit(t)} className="text-primary-600 hover:text-primary-900 mr-3"><PencilIcon className="h-5 w-5" /></button>
+                          <button onClick={() => handleDelete(t.id)} className="text-red-600 hover:text-red-900"><TrashIcon className="h-5 w-5" /></button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {transactions.length === 0 && (
+              <p className="py-8 text-center text-sm text-gray-500">No transactions match your filters.</p>
+            )}
+          </div>
+        )}
+
+        {/* ----- MERCHANT VIEW ----- */}
+        {view === 'merchant' && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 w-10"></th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('merchant')}>
+                    <div className="flex items-center gap-1">Merchant <SortIcon column="merchant" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('count')}>
+                    <div className="flex items-center justify-end gap-1">Count <SortIcon column="count" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('total_spend')}>
+                    <div className="flex items-center justify-end gap-1">Total Spend <SortIcon column="total_spend" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('total_income')}>
+                    <div className="flex items-center justify-end gap-1">Total Income <SortIcon column="total_income" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('first_date')}>
+                    <div className="flex items-center gap-1">First <SortIcon column="first_date" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleMerchantSort('last_date')}>
+                    <div className="flex items-center gap-1">Last <SortIcon column="last_date" active={merchantSort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Categories</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {merchantGroups.map((g) => {
+                  const isOpen = !!expandedMerchants[g.merchant];
+                  return (
+                    <Fragment key={g.merchant}>
+                      <tr className="hover:bg-gray-50">
+                        <td className="px-3 py-4">
+                          <button onClick={() => toggleMerchantExpand(g.merchant)} className="text-gray-500">
+                            {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{g.merchant}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{g.count}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-red-700">${g.total_debit.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-green-700">${g.total_credit.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{format(new Date(g.first_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{format(new Date(g.last_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 text-sm">
+                          <div className="flex flex-wrap gap-1">
+                            {g.category_ids.length === 0 && <span className="text-gray-400 text-xs">—</span>}
+                            {g.category_ids.map((cid) => (
+                              <span key={cid} className="px-2 py-1 rounded-full text-xs" style={{
+                                backgroundColor: (categoriesById[cid]?.color || '#999') + '20',
+                                color: categoriesById[cid]?.color || '#666',
+                              }}>
+                                {categoriesById[cid]?.name || `#${cid}`}
+                              </span>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
+                          <button onClick={() => recategorizeMerchant(g.merchant)} className="btn btn-secondary text-xs">
+                            Recategorize all
+                          </button>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={9} className="bg-gray-50 px-6 py-4">
+                            <div className="space-y-1">
+                              {(merchantTransactions[g.merchant] || []).map((t) => (
+                                <div key={t.id} className="flex items-center justify-between text-sm">
+                                  <span className="text-gray-600">{format(new Date(t.date), 'MMM dd, yyyy')}</span>
+                                  <span className="text-gray-700 flex-1 mx-4 truncate">{t.description || ''}</span>
+                                  <span className="text-xs text-gray-500 mr-3">{accountsById[t.account_id]?.name || '—'}</span>
+                                  <span className="px-2 py-0.5 rounded-full text-xs mr-3" style={{
+                                    backgroundColor: (categoriesById[t.category_id]?.color || '#999') + '20',
+                                    color: categoriesById[t.category_id]?.color || '#666',
+                                  }}>
+                                    {categoriesById[t.category_id]?.name || 'Uncategorized'}
+                                  </span>
+                                  <span className={t.transaction_type === 'credit' ? 'text-green-700' : 'text-red-700'}>
+                                    ${Number(t.amount).toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                              {(merchantTransactions[g.merchant] || []).length === 0 && (
+                                <p className="text-xs text-gray-500">Loading…</p>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            {merchantGroups.length === 0 && (
+              <p className="py-8 text-center text-sm text-gray-500">No merchants match your filters.</p>
+            )}
+          </div>
+        )}
       </div>
+
+      {/* Rule prompt modal */}
+      {rulePrompt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-white rounded-lg shadow-lg p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Create rule?</h3>
+            <p className="text-sm text-gray-700 mb-4">
+              Also categorize future transactions matching <strong>"{rulePrompt.merchant}"</strong> as <strong>{rulePrompt.category_name}</strong>?
+            </p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setRulePrompt(null)} className="btn btn-secondary">No, just these</button>
+              <button onClick={acceptRule} className="btn btn-primary">Yes, create rule</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
