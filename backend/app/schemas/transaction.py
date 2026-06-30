@@ -71,3 +71,15 @@ class MerchantGroup(BaseModel):
     last_date: datetime
     category_ids: List[int]
     account_ids: List[int]
+
+
+class CategoryGroup(BaseModel):
+    category_id: Optional[int] = None
+    category_name: str
+    count: int
+    total_debit: float
+    total_credit: float
+    first_date: datetime
+    last_date: datetime
+    top_merchants: List[str]
+    account_ids: List[int]

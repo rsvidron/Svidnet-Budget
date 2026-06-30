@@ -52,6 +52,7 @@ export const authAPI = {
 export const transactionsAPI = {
   getAll: (params) => api.get('/transactions/', { params }),
   getMerchants: (params) => api.get('/transactions/merchants', { params }),
+  getCategoryGroups: (params) => api.get('/transactions/categories', { params }),
   bulkUpdate: (data) => api.post('/transactions/bulk-update', data),
   bulkUpdateByMerchant: (data) => api.post('/transactions/bulk-update-by-merchant', data),
   create: (data) => api.post('/transactions/', data),

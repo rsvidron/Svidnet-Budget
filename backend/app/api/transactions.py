@@ -16,6 +16,7 @@ from app.schemas.transaction import (
     BulkUpdateRequest,
     BulkUpdateByMerchantRequest,
     MerchantGroup,
+    CategoryGroup,
 )
 from app.api.deps import get_current_user
 from app.api.accounts import get_or_create_account
@@ -249,6 +250,114 @@ def get_merchant_groups(
     reverse = (sort_order or "desc").lower() != "asc"
     sort_key_map = {
         "merchant": lambda x: x.merchant.lower(),
+        "count": lambda x: x.count,
+        "total_spend": lambda x: x.total_debit,
+        "total_income": lambda x: x.total_credit,
+        "last_date": lambda x: x.last_date,
+        "first_date": lambda x: x.first_date,
+    }
+    items.sort(key=sort_key_map.get(sort_by, sort_key_map["total_spend"]), reverse=reverse)
+    return items
+
+
+@router.get("/categories", response_model=List[CategoryGroup])
+def get_category_groups(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    category_id: Optional[str] = None,
+    account_id: Optional[str] = None,
+    merchant: Optional[str] = None,
+    sort_by: Optional[str] = "total_spend",
+    sort_order: Optional[str] = "desc",
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Aggregate transactions by category. Honors filters; mirrors /merchants."""
+    q = db.query(Transaction).filter(Transaction.user_id == current_user.id)
+    if start_date:
+        q = q.filter(Transaction.date >= start_date)
+    if end_date:
+        q = q.filter(Transaction.date <= end_date)
+    if category_id and category_id.strip():
+        try:
+            q = q.filter(Transaction.category_id == int(category_id))
+        except ValueError:
+            pass
+    if account_id and account_id.strip():
+        try:
+            q = q.filter(Transaction.account_id == int(account_id))
+        except ValueError:
+            pass
+    if merchant and merchant.strip():
+        q = q.filter(Transaction.merchant.ilike(f"%{merchant.strip()}%"))
+
+    rows = q.all()
+    if not rows:
+        return []
+
+    # Pre-fetch category names for the user so the response is self-describing.
+    cats = (
+        db.query(Category)
+        .filter(Category.user_id == current_user.id)
+        .all()
+    )
+    cat_name_by_id = {c.id: c.name for c in cats}
+
+    groups: dict = {}
+    # Use -1 as the bucket key for uncategorized so it survives dict lookup.
+    UNCATEGORIZED = -1
+    for t in rows:
+        key = t.category_id if t.category_id is not None else UNCATEGORIZED
+        g = groups.get(key)
+        if g is None:
+            g = {
+                "category_id": t.category_id,
+                "category_name": cat_name_by_id.get(t.category_id, "Uncategorized") if t.category_id else "Uncategorized",
+                "count": 0,
+                "total_debit": 0.0,
+                "total_credit": 0.0,
+                "first_date": t.date,
+                "last_date": t.date,
+                "merchant_totals": {},  # merchant -> debit total, for top_merchants ranking
+                "account_ids": set(),
+            }
+            groups[key] = g
+        g["count"] += 1
+        amt = float(t.amount or 0.0)
+        if t.transaction_type == TransactionType.CREDIT:
+            g["total_credit"] += amt
+        else:
+            g["total_debit"] += amt
+        if t.date < g["first_date"]:
+            g["first_date"] = t.date
+        if t.date > g["last_date"]:
+            g["last_date"] = t.date
+        m = (t.merchant or "").strip() or "Unknown"
+        # Rank merchants within a category by debit spend (or count if no debits)
+        g["merchant_totals"][m] = g["merchant_totals"].get(m, 0.0) + (amt if t.transaction_type != TransactionType.CREDIT else 0.0)
+        if t.account_id is not None:
+            g["account_ids"].add(t.account_id)
+
+    items: List[CategoryGroup] = []
+    for g in groups.values():
+        top = sorted(g["merchant_totals"].items(), key=lambda kv: kv[1], reverse=True)
+        # Fall back to first 5 merchants by appearance order if all debits are zero.
+        top_merchants = [m for m, _ in top[:5]] if any(v > 0 for _, v in top) else list(g["merchant_totals"].keys())[:5]
+        items.append(CategoryGroup(
+            category_id=g["category_id"],
+            category_name=g["category_name"],
+            count=g["count"],
+            total_debit=round(g["total_debit"], 2),
+            total_credit=round(g["total_credit"], 2),
+            first_date=g["first_date"],
+            last_date=g["last_date"],
+            top_merchants=top_merchants,
+            account_ids=sorted(g["account_ids"]),
+        ))
+
+    reverse = (sort_order or "desc").lower() != "asc"
+    sort_key_map = {
+        "category": lambda x: x.category_name.lower(),
         "count": lambda x: x.count,
         "total_spend": lambda x: x.total_debit,
         "total_income": lambda x: x.total_credit,

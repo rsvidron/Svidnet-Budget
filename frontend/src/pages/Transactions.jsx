@@ -21,9 +21,10 @@ const ACCOUNT_TYPE_LABEL = {
 export default function Transactions() {
   const [searchParams] = useSearchParams();
   const categoryFromUrl = searchParams.get('category_id') || '';
-  const [view, setView] = useState('list'); // 'list' | 'merchant'
+  const [view, setView] = useState('list'); // 'list' | 'merchant' | 'category'
   const [transactions, setTransactions] = useState([]);
   const [merchantGroups, setMerchantGroups] = useState([]);
+  const [categoryGroups, setCategoryGroups] = useState([]);
   const [categories, setCategories] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +35,7 @@ export default function Transactions() {
   });
   const [sortConfig, setSortConfig] = useState({ sortBy: 'date', sortOrder: 'desc' });
   const [merchantSort, setMerchantSort] = useState({ sortBy: 'total_spend', sortOrder: 'desc' });
+  const [categorySort, setCategorySort] = useState({ sortBy: 'total_spend', sortOrder: 'desc' });
   const [editingId, setEditingId] = useState(null);
   const [editData, setEditData] = useState({});
   const [uploading, setUploading] = useState(false);
@@ -48,6 +50,10 @@ export default function Transactions() {
   // Expanded merchant rows + per-merchant transactions cache
   const [expandedMerchants, setExpandedMerchants] = useState({});
   const [merchantTransactions, setMerchantTransactions] = useState({});
+
+  // Expanded category rows + per-category transactions cache
+  const [expandedCategories, setExpandedCategories] = useState({});
+  const [categoryTransactions, setCategoryTransactions] = useState({});
 
   // Rule prompt modal
   const [rulePrompt, setRulePrompt] = useState(null); // { merchant, category_id, category_name }
@@ -78,10 +84,12 @@ export default function Transactions() {
   useEffect(() => {
     if (view === 'list') {
       fetchTransactions();
-    } else {
+    } else if (view === 'merchant') {
       fetchMerchantGroups();
+    } else {
+      fetchCategoryGroups();
     }
-  }, [view, filters.category_id, filters.merchant, filters.account_id, sortConfig, merchantSort]);
+  }, [view, filters.category_id, filters.merchant, filters.account_id, sortConfig, merchantSort, categorySort]);
 
   const fetchTransactions = async () => {
     try {
@@ -109,6 +117,21 @@ export default function Transactions() {
       setMerchantGroups(response.data);
     } catch (error) {
       console.error('Failed to fetch merchant groups:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchCategoryGroups = async () => {
+    try {
+      const response = await transactionsAPI.getCategoryGroups({
+        ...filters,
+        sort_by: categorySort.sortBy,
+        sort_order: categorySort.sortOrder,
+      });
+      setCategoryGroups(response.data);
+    } catch (error) {
+      console.error('Failed to fetch category groups:', error);
     } finally {
       setLoading(false);
     }
@@ -200,6 +223,13 @@ export default function Transactions() {
 
   const handleMerchantSort = (column) => {
     setMerchantSort((prev) => ({
+      sortBy: column,
+      sortOrder: prev.sortBy === column && prev.sortOrder === 'asc' ? 'desc' : 'asc',
+    }));
+  };
+
+  const handleCategorySort = (column) => {
+    setCategorySort((prev) => ({
       sortBy: column,
       sortOrder: prev.sortBy === column && prev.sortOrder === 'asc' ? 'desc' : 'asc',
     }));
@@ -327,6 +357,34 @@ export default function Transactions() {
     }
   };
 
+  const toggleCategoryExpand = async (group) => {
+    const key = group.category_id == null ? 'uncategorized' : String(group.category_id);
+    setExpandedCategories((prev) => ({ ...prev, [key]: !prev[key] }));
+    if (categoryTransactions[key]) return;
+    try {
+      const params = {
+        sort_by: 'date',
+        sort_order: 'desc',
+        limit: 500,
+        merchant: filters.merchant,
+        account_id: filters.account_id,
+      };
+      // If this group is the "Uncategorized" bucket, we still hit the same endpoint
+      // and filter to category_id=null client-side; the server has no nullable filter.
+      if (group.category_id != null) {
+        params.category_id = group.category_id;
+      }
+      const response = await transactionsAPI.getAll(params);
+      let rows = response.data;
+      if (group.category_id == null) {
+        rows = rows.filter((t) => t.category_id == null);
+      }
+      setCategoryTransactions((prev) => ({ ...prev, [key]: rows }));
+    } catch (error) {
+      console.error('Failed to load category transactions:', error);
+    }
+  };
+
   const recategorizeMerchant = async (merchant) => {
     const target = prompt(`Recategorize ALL "${merchant}" transactions to which category?\n\n${categories.map((c) => `• ${c.name}`).join('\n')}\n\nType the category name:`);
     if (!target) return;
@@ -440,7 +498,7 @@ export default function Transactions() {
             </button>
             <button
               type="button"
-              className={`px-4 py-2 text-sm font-medium border rounded-r-md -ml-px ${
+              className={`px-4 py-2 text-sm font-medium border -ml-px ${
                 view === 'merchant'
                   ? 'bg-blue-600 text-white border-blue-600'
                   : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
@@ -448,6 +506,17 @@ export default function Transactions() {
               onClick={() => setView('merchant')}
             >
               By Merchant
+            </button>
+            <button
+              type="button"
+              className={`px-4 py-2 text-sm font-medium border rounded-r-md -ml-px ${
+                view === 'category'
+                  ? 'bg-blue-600 text-white border-blue-600'
+                  : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+              }`}
+              onClick={() => setView('category')}
+            >
+              By Category
             </button>
           </div>
         </div>
@@ -736,6 +805,99 @@ export default function Transactions() {
             </table>
             {merchantGroups.length === 0 && (
               <p className="py-8 text-center text-sm text-gray-500">No merchants match your filters.</p>
+            )}
+          </div>
+        )}
+
+        {/* ----- CATEGORY VIEW ----- */}
+        {view === 'category' && (
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-3 py-3 w-10"></th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('category')}>
+                    <div className="flex items-center gap-1">Category <SortIcon column="category" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('count')}>
+                    <div className="flex items-center justify-end gap-1">Count <SortIcon column="count" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('total_spend')}>
+                    <div className="flex items-center justify-end gap-1">Total Spend <SortIcon column="total_spend" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('total_income')}>
+                    <div className="flex items-center justify-end gap-1">Total Income <SortIcon column="total_income" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('first_date')}>
+                    <div className="flex items-center gap-1">First <SortIcon column="first_date" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100 select-none" onClick={() => handleCategorySort('last_date')}>
+                    <div className="flex items-center gap-1">Last <SortIcon column="last_date" active={categorySort} /></div>
+                  </th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Top merchants</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {categoryGroups.map((g) => {
+                  const expandKey = g.category_id == null ? 'uncategorized' : String(g.category_id);
+                  const isOpen = !!expandedCategories[expandKey];
+                  const catColor = g.category_id != null ? categoriesById[g.category_id]?.color : '#9CA3AF';
+                  return (
+                    <Fragment key={expandKey}>
+                      <tr className="hover:bg-gray-50">
+                        <td className="px-3 py-4">
+                          <button onClick={() => toggleCategoryExpand(g)} className="text-gray-500">
+                            {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                          <span className="px-2 py-1 rounded-full text-xs font-medium" style={{
+                            backgroundColor: (catColor || '#999') + '20',
+                            color: catColor || '#666',
+                          }}>
+                            {g.category_name}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{g.count}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-red-700">${g.total_debit.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-green-700">${g.total_credit.toFixed(2)}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{format(new Date(g.first_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{format(new Date(g.last_date), 'MMM dd, yyyy')}</td>
+                        <td className="px-6 py-4 text-sm text-gray-700">
+                          <span className="truncate inline-block max-w-[280px]" title={g.top_merchants.join(', ')}>
+                            {g.top_merchants.length ? g.top_merchants.join(', ') : '—'}
+                          </span>
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr>
+                          <td colSpan={8} className="bg-gray-50 px-6 py-4">
+                            <div className="space-y-1">
+                              {(categoryTransactions[expandKey] || []).map((t) => (
+                                <div key={t.id} className="flex items-center justify-between text-sm">
+                                  <span className="text-gray-600">{format(new Date(t.date), 'MMM dd, yyyy')}</span>
+                                  <span className="text-gray-900 flex-1 mx-4 truncate">{t.merchant}</span>
+                                  <span className="text-gray-700 flex-1 mr-4 truncate">{t.description || ''}</span>
+                                  <span className="text-xs text-gray-500 mr-3">{accountsById[t.account_id]?.name || '—'}</span>
+                                  <span className={t.transaction_type === 'credit' ? 'text-green-700' : 'text-red-700'}>
+                                    ${Number(t.amount).toFixed(2)}
+                                  </span>
+                                </div>
+                              ))}
+                              {(categoryTransactions[expandKey] || []).length === 0 && (
+                                <p className="text-xs text-gray-500">Loading…</p>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+            {categoryGroups.length === 0 && (
+              <p className="py-8 text-center text-sm text-gray-500">No categories match your filters.</p>
             )}
           </div>
         )}
