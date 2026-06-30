@@ -20,6 +20,7 @@ class Transaction(Base):
     account_id = Column(Integer, ForeignKey("accounts.id"), nullable=True, index=True)
     date = Column(DateTime(timezone=True), nullable=False)
     merchant = Column(String, nullable=False)
+    normalized_merchant = Column(String, nullable=True, index=True)
     description = Column(String, nullable=True)
     amount = Column(Float, nullable=False)
     transaction_type = Column(Enum(TransactionType), nullable=False)

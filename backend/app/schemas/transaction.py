@@ -55,6 +55,7 @@ class BulkUpdateRequest(BaseModel):
 
 class BulkUpdateByMerchantRequest(BaseModel):
     merchant: str
+    normalized: bool = False
     category_id: Optional[int] = None
     account_id: Optional[int] = None
     start_date: Optional[datetime] = None
@@ -64,6 +65,8 @@ class BulkUpdateByMerchantRequest(BaseModel):
 
 class MerchantGroup(BaseModel):
     merchant: str
+    normalized_key: str
+    variants: List[str] = []
     count: int
     total_debit: float
     total_credit: float

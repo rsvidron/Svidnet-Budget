@@ -10,7 +10,7 @@ from app.core.config import settings
 from app.core.database import engine, Base, SessionLocal
 from app.api import auth, transactions, categories, budgets, savings_goals, analytics, debug, accounts
 from app.utils.seed_db import seed_default_user
-from app.utils.migrations import ensure_account_id_column, backfill_default_accounts
+from app.utils.migrations import ensure_account_id_column, ensure_normalized_merchant_column, backfill_default_accounts, backfill_normalized_merchant
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -30,6 +30,11 @@ try:
     ensure_account_id_column(engine)
 except Exception as e:
     logger.error(f"Migration ensure_account_id_column failed: {e}")
+
+try:
+    ensure_normalized_merchant_column(engine)
+except Exception as e:
+    logger.error(f"Migration ensure_normalized_merchant_column failed: {e}")
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -51,6 +56,7 @@ async def startup_event():
         backfilled = backfill_default_accounts(db)
         if backfilled:
             logger.info(f"Backfilled default accounts for {backfilled} user(s).")
+        backfill_normalized_merchant(db)
     finally:
         db.close()
 

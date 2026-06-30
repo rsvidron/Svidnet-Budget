@@ -333,24 +333,20 @@ export default function Transactions() {
   };
 
   // ---- Merchant view actions ----------------------------------------------
-  const toggleMerchantExpand = async (merchant) => {
-    setExpandedMerchants((prev) => ({ ...prev, [merchant]: !prev[merchant] }));
-    if (!merchantTransactions[merchant]) {
+  const toggleMerchantExpand = async (group) => {
+    const key = group.normalized_key;
+    setExpandedMerchants((prev) => ({ ...prev, [key]: !prev[key] }));
+    if (!merchantTransactions[key]) {
       try {
         const response = await transactionsAPI.getAll({
-          merchant,
+          normalized_merchant: key,
           category_id: filters.category_id,
           account_id: filters.account_id,
           sort_by: 'date',
           sort_order: 'desc',
           limit: 500,
         });
-        // Server uses ilike '%merchant%'; tighten to exact-merchant match here.
-        const target = (merchant || '').trim().toLowerCase();
-        const exact = response.data.filter(
-          (t) => (t.merchant || '').trim().toLowerCase() === target,
-        );
-        setMerchantTransactions((prev) => ({ ...prev, [merchant]: exact }));
+        setMerchantTransactions((prev) => ({ ...prev, [key]: response.data }));
       } catch (error) {
         console.error('Failed to load merchant transactions:', error);
       }
@@ -385,8 +381,8 @@ export default function Transactions() {
     }
   };
 
-  const recategorizeMerchant = async (merchant) => {
-    const target = prompt(`Recategorize ALL "${merchant}" transactions to which category?\n\n${categories.map((c) => `• ${c.name}`).join('\n')}\n\nType the category name:`);
+  const recategorizeMerchant = async (group) => {
+    const target = prompt(`Recategorize ALL "${group.merchant}" transactions to which category?\n\n${categories.map((c) => `• ${c.name}`).join('\n')}\n\nType the category name:`);
     if (!target) return;
     const cat = categories.find((c) => c.name.toLowerCase() === target.trim().toLowerCase());
     if (!cat) {
@@ -395,12 +391,12 @@ export default function Transactions() {
     }
     try {
       const { data } = await transactionsAPI.bulkUpdateByMerchant({
-        merchant,
+        merchant: group.normalized_key,
+        normalized: true,
         category_id: cat.id,
       });
-      setUploadMessage({ type: 'success', text: `Updated ${data.updated} "${merchant}" transaction(s) → ${cat.name}.` });
-      setRulePrompt({ merchant, category_id: cat.id, category_name: cat.name });
-      // Invalidate caches and refresh
+      setUploadMessage({ type: 'success', text: `Updated ${data.updated} "${group.merchant}" transaction(s) → ${cat.name}.` });
+      setRulePrompt({ merchant: group.merchant, category_id: cat.id, category_name: cat.name });
       setMerchantTransactions({});
       setExpandedMerchants({});
       fetchMerchantGroups();
@@ -737,16 +733,27 @@ export default function Transactions() {
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {merchantGroups.map((g) => {
-                  const isOpen = !!expandedMerchants[g.merchant];
+                  const isOpen = !!expandedMerchants[g.normalized_key];
                   return (
-                    <Fragment key={g.merchant}>
+                    <Fragment key={g.normalized_key}>
                       <tr className="hover:bg-gray-50">
                         <td className="px-3 py-4">
-                          <button onClick={() => toggleMerchantExpand(g.merchant)} className="text-gray-500">
+                          <button onClick={() => toggleMerchantExpand(g)} className="text-gray-500">
                             {isOpen ? <ChevronDownIcon className="w-4 h-4" /> : <ChevronRightIcon className="w-4 h-4" />}
                           </button>
                         </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{g.merchant}</td>
+                        <td className="px-6 py-4 text-sm">
+                          <div className="font-medium text-gray-900">{g.merchant}</div>
+                          {g.variants && g.variants.length > 0 && (
+                            <div
+                              className="text-xs text-gray-500 mt-0.5 truncate max-w-[360px]"
+                              title={g.variants.join('\n')}
+                            >
+                              also: {g.variants.slice(0, 2).join(' · ')}
+                              {g.variants.length > 2 && ` · +${g.variants.length - 2} more`}
+                            </div>
+                          )}
+                        </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-gray-900">{g.count}</td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-red-700">${g.total_debit.toFixed(2)}</td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-right text-green-700">${g.total_credit.toFixed(2)}</td>
@@ -766,7 +773,7 @@ export default function Transactions() {
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-right text-sm">
-                          <button onClick={() => recategorizeMerchant(g.merchant)} className="btn btn-secondary text-xs">
+                          <button onClick={() => recategorizeMerchant(g)} className="btn btn-secondary text-xs">
                             Recategorize all
                           </button>
                         </td>
@@ -775,10 +782,11 @@ export default function Transactions() {
                         <tr>
                           <td colSpan={9} className="bg-gray-50 px-6 py-4">
                             <div className="space-y-1">
-                              {(merchantTransactions[g.merchant] || []).map((t) => (
+                              {(merchantTransactions[g.normalized_key] || []).map((t) => (
                                 <div key={t.id} className="flex items-center justify-between text-sm">
                                   <span className="text-gray-600">{format(new Date(t.date), 'MMM dd, yyyy')}</span>
-                                  <span className="text-gray-700 flex-1 mx-4 truncate">{t.description || ''}</span>
+                                  <span className="text-gray-800 flex-1 mx-3 truncate" title={t.merchant}>{t.merchant}</span>
+                                  <span className="text-gray-500 flex-1 mr-3 truncate text-xs">{t.description || ''}</span>
                                   <span className="text-xs text-gray-500 mr-3">{accountsById[t.account_id]?.name || '—'}</span>
                                   <span className="px-2 py-0.5 rounded-full text-xs mr-3" style={{
                                     backgroundColor: (categoriesById[t.category_id]?.color || '#999') + '20',
@@ -791,7 +799,7 @@ export default function Transactions() {
                                   </span>
                                 </div>
                               ))}
-                              {(merchantTransactions[g.merchant] || []).length === 0 && (
+                              {(merchantTransactions[g.normalized_key] || []).length === 0 && (
                                 <p className="text-xs text-gray-500">Loading…</p>
                               )}
                             </div>

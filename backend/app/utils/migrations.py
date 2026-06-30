@@ -10,16 +10,13 @@ from sqlalchemy.orm import Session
 
 from app.models import User, Transaction, Account
 from app.models.account import AccountType
+from app.utils.merchant_normalize import normalize_merchant
 
 logger = logging.getLogger(__name__)
 
 
 def ensure_account_id_column(engine: Engine) -> None:
-    """Add transactions.account_id if missing on an existing transactions table.
-
-    Base.metadata.create_all does NOT add new columns to tables that already exist,
-    so we patch the schema here.
-    """
+    """Add transactions.account_id if missing on an existing transactions table."""
     inspector = inspect(engine)
     if "transactions" not in inspector.get_table_names():
         return  # create_all will build it fresh with the column already.
@@ -33,7 +30,6 @@ def ensure_account_id_column(engine: Engine) -> None:
         ddl = "ALTER TABLE transactions ADD COLUMN account_id INTEGER REFERENCES accounts(id)"
         idx = "CREATE INDEX IF NOT EXISTS ix_transactions_account_id ON transactions(account_id)"
     else:
-        # PostgreSQL / generic SQL
         ddl = "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS account_id INTEGER REFERENCES accounts(id)"
         idx = "CREATE INDEX IF NOT EXISTS ix_transactions_account_id ON transactions(account_id)"
 
@@ -44,6 +40,32 @@ def ensure_account_id_column(engine: Engine) -> None:
             conn.execute(text(idx))
         except Exception as e:
             logger.warning(f"Could not create ix_transactions_account_id index: {e}")
+
+
+def ensure_normalized_merchant_column(engine: Engine) -> None:
+    """Add transactions.normalized_merchant if missing."""
+    inspector = inspect(engine)
+    if "transactions" not in inspector.get_table_names():
+        return
+    cols = {c["name"] for c in inspector.get_columns("transactions")}
+    if "normalized_merchant" in cols:
+        return
+
+    dialect = engine.dialect.name
+    if dialect == "sqlite":
+        ddl = "ALTER TABLE transactions ADD COLUMN normalized_merchant VARCHAR"
+        idx = "CREATE INDEX IF NOT EXISTS ix_transactions_normalized_merchant ON transactions(normalized_merchant)"
+    else:
+        ddl = "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS normalized_merchant VARCHAR"
+        idx = "CREATE INDEX IF NOT EXISTS ix_transactions_normalized_merchant ON transactions(normalized_merchant)"
+
+    logger.info("Migration: adding transactions.normalized_merchant column")
+    with engine.begin() as conn:
+        conn.execute(text(ddl))
+        try:
+            conn.execute(text(idx))
+        except Exception as e:
+            logger.warning(f"Could not create ix_transactions_normalized_merchant index: {e}")
 
 
 def backfill_default_accounts(db: Session) -> int:
@@ -87,3 +109,27 @@ def backfill_default_accounts(db: Session) -> int:
             logger.info(f"Backfilled {affected} transactions for user_id={uid} to account '{default.name}'")
     db.commit()
     return patched
+
+
+def backfill_normalized_merchant(db: Session, batch_size: int = 1000) -> int:
+    """Populate normalized_merchant for any transaction missing one.
+    Returns total rows patched. Safe to run on every startup — usually a no-op."""
+    total = 0
+    while True:
+        rows = (
+            db.query(Transaction)
+            .filter((Transaction.normalized_merchant.is_(None)) | (Transaction.normalized_merchant == ""))
+            .limit(batch_size)
+            .all()
+        )
+        if not rows:
+            break
+        for t in rows:
+            t.normalized_merchant = normalize_merchant(t.merchant) or t.merchant.lower()
+        db.commit()
+        total += len(rows)
+        if len(rows) < batch_size:
+            break
+    if total:
+        logger.info(f"Backfilled normalized_merchant for {total} transaction(s).")
+    return total

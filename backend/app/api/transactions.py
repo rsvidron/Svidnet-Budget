@@ -26,6 +26,7 @@ from app.parsers.account_activity_parser import (
     is_account_activity_csv,
 )
 from app.services.categorization_service import CategorizationService
+from app.utils.merchant_normalize import normalize_merchant
 
 router = APIRouter()
 
@@ -117,6 +118,7 @@ def get_transactions(
     category_id: Optional[str] = None,
     account_id: Optional[str] = None,
     merchant: Optional[str] = None,
+    normalized_merchant: Optional[str] = None,
     sort_by: Optional[str] = "date",
     sort_order: Optional[str] = "desc",
     current_user: User = Depends(get_current_user),
@@ -140,7 +142,9 @@ def get_transactions(
             query = query.filter(Transaction.account_id == acc_id)
         except ValueError:
             pass
-    if merchant and merchant.strip():
+    if normalized_merchant and normalized_merchant.strip():
+        query = query.filter(Transaction.normalized_merchant == normalized_merchant.strip())
+    elif merchant and merchant.strip():
         query = query.filter(Transaction.merchant.ilike(f"%{merchant}%"))
 
     # Apply sorting
@@ -176,7 +180,11 @@ def get_merchant_groups(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Aggregate transactions by normalized merchant name. Honors filters."""
+    """Aggregate transactions by *normalized* merchant key. Honors filters.
+    Returns one row per normalized merchant; the display name is the most
+    common raw `merchant` string within the group, and `variants` lists the
+    distinct raw strings so the UI can show "(also: …)".
+    """
     q = db.query(Transaction).filter(Transaction.user_id == current_user.id)
     if start_date:
         q = q.filter(Transaction.date >= start_date)
@@ -193,23 +201,26 @@ def get_merchant_groups(
         except ValueError:
             pass
     if merchant and merchant.strip():
-        q = q.filter(Transaction.merchant.ilike(f"%{merchant.strip()}%"))
+        # Match either the raw merchant or the normalized key.
+        needle = merchant.strip()
+        q = q.filter(
+            (Transaction.merchant.ilike(f"%{needle}%"))
+            | (Transaction.normalized_merchant.ilike(f"%{needle.lower()}%"))
+        )
 
     rows = q.all()
     if not rows:
         return []
 
-    # Aggregate in Python — group counts are small (hundreds, not millions) and
-    # keeps category_ids/account_ids collection cross-dialect simple.
+    # Group by normalized_merchant. Fall back to lowercase raw if missing.
     groups: dict[str, dict] = {}
     for t in rows:
-        key = (t.merchant or "").strip()
-        display = key or "Unknown"
-        norm = display.lower()
+        norm = (t.normalized_merchant or (t.merchant or "").strip().lower() or "unknown")
         g = groups.get(norm)
+        raw = (t.merchant or "").strip() or "Unknown"
         if g is None:
             g = {
-                "merchant": display,
+                "normalized": norm,
                 "count": 0,
                 "total_debit": 0.0,
                 "total_credit": 0.0,
@@ -217,6 +228,7 @@ def get_merchant_groups(
                 "last_date": t.date,
                 "category_ids": set(),
                 "account_ids": set(),
+                "raw_counts": {},  # raw merchant string -> count, to pick display name + variants
             }
             groups[norm] = g
         g["count"] += 1
@@ -233,11 +245,20 @@ def get_merchant_groups(
             g["category_ids"].add(t.category_id)
         if t.account_id is not None:
             g["account_ids"].add(t.account_id)
+        g["raw_counts"][raw] = g["raw_counts"].get(raw, 0) + 1
 
-    items = []
+    items: List[MerchantGroup] = []
     for g in groups.values():
+        # Display name = most frequent raw merchant string in this group.
+        display = max(g["raw_counts"].items(), key=lambda kv: kv[1])[0]
+        variants = sorted(
+            (r for r in g["raw_counts"].keys() if r != display),
+            key=lambda r: -g["raw_counts"][r],
+        )
         items.append(MerchantGroup(
-            merchant=g["merchant"],
+            merchant=display,
+            normalized_key=g["normalized"],
+            variants=variants[:20],
             count=g["count"],
             total_debit=round(g["total_debit"], 2),
             total_credit=round(g["total_credit"], 2),
@@ -463,8 +484,11 @@ def bulk_update_by_merchant(
 
     q = db.query(Transaction).filter(
         Transaction.user_id == current_user.id,
-        func.lower(func.trim(Transaction.merchant)) == merchant.lower(),
     )
+    if payload.normalized:
+        q = q.filter(Transaction.normalized_merchant == merchant.lower())
+    else:
+        q = q.filter(func.lower(func.trim(Transaction.merchant)) == merchant.lower())
     if payload.start_date:
         q = q.filter(Transaction.date >= payload.start_date)
     if payload.end_date:
@@ -507,6 +531,7 @@ def create_transaction(
     transaction = Transaction(
         user_id=current_user.id,
         category_id=category_id,
+        normalized_merchant=normalize_merchant(payload.get("merchant")) or (payload.get("merchant") or "").lower(),
         **payload,
     )
 
@@ -541,6 +566,10 @@ def update_transaction(
 
     for field, value in update_data.items():
         setattr(transaction, field, value)
+
+    # Re-derive normalized_merchant when merchant changes.
+    if "merchant" in update_data:
+        transaction.normalized_merchant = normalize_merchant(transaction.merchant) or (transaction.merchant or "").lower()
 
     db.commit()
     db.refresh(transaction)
@@ -717,6 +746,7 @@ async def upload_bank_statement(
             category_id=category_id_resolved,
             account_id=target_account.id,
             source_file=file.filename,
+            normalized_merchant=normalize_merchant(payload.get("merchant")) or (payload.get("merchant") or "").lower(),
             **payload
         )
 
